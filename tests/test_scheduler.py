@@ -22,7 +22,6 @@ async def deps(tmp_path: Path):
         audit_interval_s=0,
         metrics_interval_s=3600,
         indexnow_interval_s=3600,
-        draft_interval_s=3600,
         report_interval_s=3600,
     )
     store = Store(tmp_path / "data" / "seo.db")
@@ -34,7 +33,7 @@ async def deps(tmp_path: Path):
 
 def test_jobs_table_matches_settings(deps: Deps) -> None:
     jobs = Scheduler(deps).jobs()
-    assert [j[0] for j in jobs] == ["audit", "metrics", "indexnow", "draft", "report"]
+    assert [j[0] for j in jobs] == ["audit", "metrics", "indexnow", "report"]
     audit = jobs[0]
     assert audit[2] == 0 and audit[3] == 0  # interval 0 → immediate start
     assert jobs[1][3] == 60  # delay bounded by min(base, interval)

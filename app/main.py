@@ -1,4 +1,4 @@
-"""FastAPI app: /health + /metrics, lifespan-managed store/client/scheduler."""
+"""FastAPI app: health, metrics, and the lifespan-managed Beacon worker."""
 
 from __future__ import annotations
 
@@ -15,6 +15,7 @@ from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 
 from app.config import settings
 from app.metrics_registry import ACTIVE_FINDINGS
+from app.managed import ManagedWorker
 from app.pipeline import Deps
 from app.scheduler import Scheduler
 from app.store import Store
@@ -35,17 +36,28 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     deps = Deps(settings=settings, store=store, client=client)
     app.state.deps = deps
     scheduler = Scheduler(deps)
-    if settings.scheduler_enabled:
+    managed: ManagedWorker | None = None
+    if settings.beacon_managed_mode:
+        if not settings.beacon_configured:
+            raise RuntimeError(
+                "Managed mode requires BEACON_CONTROL_PLANE_URL and BEACON_WORKER_TOKEN"
+            )
+        managed = ManagedWorker(settings=settings, store=store, http=client)
+        managed.start()
+    elif settings.scheduler_enabled:
         scheduler.start()
+    app.state.managed = managed
     try:
         yield
     finally:
+        if managed is not None:
+            await managed.stop()
         await scheduler.stop()
         await client.aclose()
         await store.close()
 
 
-app = FastAPI(title="seo-agent", lifespan=lifespan)
+app = FastAPI(title="Hyrule Beacon Worker", lifespan=lifespan)
 
 
 @app.get("/health")
@@ -60,8 +72,15 @@ async def health() -> dict[str, Any]:
     return {
         "status": "ok",
         "environment": settings.environment,
-        "dry_run": settings.dry_run,
         "scheduler_enabled": settings.scheduler_enabled,
+        "beacon_managed_mode": settings.beacon_managed_mode,
+        "beacon_configured": settings.beacon_configured,
+        "beacon_current_run": (
+            app.state.managed.current_run_id if app.state.managed is not None else None
+        ),
+        "beacon_last_error": (
+            app.state.managed.last_error if app.state.managed is not None else None
+        ),
         "active_findings": by_severity,
         "last_runs": await deps.store.last_runs(5),
     }

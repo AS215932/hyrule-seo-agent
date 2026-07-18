@@ -22,7 +22,6 @@ def client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
 def test_health_reports_shape(client: TestClient) -> None:
     body = client.get("/health").json()
     assert body["status"] == "ok"
-    assert body["dry_run"] is True
     assert body["scheduler_enabled"] is False
     assert body["active_findings"] == {}
     assert body["last_runs"] == []

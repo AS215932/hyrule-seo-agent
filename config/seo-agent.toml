@@ -1,11 +1,11 @@
-# Model policy for the drafting step (the only LLM call in the agent).
+# Model policy for advisory visibility prioritization. Deterministic code owns
+# proposals, approval risk, and execution; model output cannot mutate state.
 # Ids follow the house "provider:model" convention (see noc-agent).
 [model]
 primary = "openrouter:z-ai/glm-5.2"
-# Fallbacks are not wired in v1 — a failed draft simply waits for the next
-# weekly cycle; nothing downstream depends on the draft succeeding.
+# A failed analysis falls back to deterministic severity/channel ordering.
 fallbacks = ["openrouter:deepseek/deepseek-v4-flash"]
 
 [providers.openrouter]
 api_key_env = "SEO_AGENT_OPENROUTER_API_KEY"
-app_title = "AS215932 SEO Agent"
+app_title = "Hyrule Beacon SEO Agent"

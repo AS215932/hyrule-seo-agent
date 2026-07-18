@@ -1,4 +1,4 @@
-"""SQLite persistence: findings, metric samples, run log, PR ledger, kv.
+"""SQLite persistence: findings, metric samples, run log, and key/value state.
 
 Single-writer, small volumes (daily snapshots) — SQLite over the shared
 Postgres on the loop VM keeps the agent decoupled from Umami's lifecycle.
@@ -46,12 +46,6 @@ CREATE TABLE IF NOT EXISTS metrics (
     sampled_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS metrics_lookup ON metrics (source, metric, key, sampled_at);
-CREATE TABLE IF NOT EXISTS pr_ledger (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    branch TEXT NOT NULL,
-    url TEXT NOT NULL DEFAULT '',
-    opened_at TEXT NOT NULL
-);
 CREATE TABLE IF NOT EXISTS kv (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL
@@ -199,20 +193,6 @@ class Store:
         )
         row = await cur.fetchone()
         return float(row["value"]) if row else None
-
-    # -- PR ledger ----------------------------------------------------------
-
-    async def record_pr(self, branch: str, url: str) -> None:
-        await self.db.execute(
-            "INSERT INTO pr_ledger (branch, url, opened_at) VALUES (?, ?, ?)",
-            (branch, url, _now()),
-        )
-        await self.db.commit()
-
-    async def last_pr_opened_at(self) -> datetime | None:
-        cur = await self.db.execute("SELECT opened_at FROM pr_ledger ORDER BY id DESC LIMIT 1")
-        row = await cur.fetchone()
-        return datetime.fromisoformat(row["opened_at"]) if row else None
 
     # -- kv -----------------------------------------------------------------
 

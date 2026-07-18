@@ -1,4 +1,4 @@
-"""Store: findings lifecycle, metrics, PR ledger, kv, runs."""
+"""Store: findings lifecycle, metrics, key/value state, and runs."""
 
 from __future__ import annotations
 
@@ -62,12 +62,6 @@ async def test_metrics_roundtrip_latest_wins(store: Store) -> None:
     await store.add_metrics([MetricSample(source="gsc", metric="clicks", key="28d", value=12)])
     assert await store.latest_metric("gsc", "clicks", "28d") == 12
     assert await store.latest_metric("gsc", "clicks", "missing") is None
-
-
-async def test_pr_ledger(store: Store) -> None:
-    assert await store.last_pr_opened_at() is None
-    await store.record_pr("seo-agent/x", "https://github.com/pr/1")
-    assert await store.last_pr_opened_at() is not None
 
 
 async def test_kv_upsert(store: Store) -> None:

@@ -1,7 +1,7 @@
 [project]
-name = "seo-agent"
-version = "0.1.0"
-description = "AS215932 autonomous SEO agent (GSC/PSI/crawl/Umami collectors → deterministic audit → LLM-drafted human-reviewed PRs against hyrule-web)"
+name = "hyrule-seo-agent"
+version = "0.2.0"
+description = "Overlay-bound LangGraph worker for Hyrule Beacon visibility measurement and guarded optimization"
 requires-python = ">=3.14"
 dependencies = [
     "fastapi>=0.115",
@@ -13,6 +13,8 @@ dependencies = [
     "structlog>=24.4",
     "prometheus-client>=0.25.0",
     "aiosqlite>=0.20",
+    "langgraph>=1.0,<2",
+    "langgraph-checkpoint-sqlite>=3.0,<4",
     "google-auth>=2.35",
     "pyjwt[crypto]>=2.9",
     "agent-core",
@@ -29,6 +31,7 @@ dev = [
 ]
 
 [project.scripts]
+hyrule-seo-agent = "app.main:main"
 seo-agent = "app.main:main"
 seoctl = "app.cli:main"
 

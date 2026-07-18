@@ -57,7 +57,7 @@ def render_discord_embed(summary: dict[str, object]) -> dict[str, object]:
     return {
         "embeds": [
             {
-                "title": "seo-agent weekly summary — hyrule.host",
+                "title": "Hyrule Beacon weekly summary — hyrule.host",
                 "description": description[:3500],
                 "fields": fields,
             }
