@@ -49,6 +49,17 @@ class GraphOutcome:
     awaiting_approval: bool
 
 
+async def delete_graph_checkpoint(settings: Settings, thread_id: str) -> None:
+    """Delete a terminal graph only after Beacon acknowledges completion."""
+
+    checkpoint_path = Path(settings.data_dir) / "beacon-checkpoints.sqlite"
+    if not checkpoint_path.exists():
+        return
+    async with AsyncSqliteSaver.from_conn_string(str(checkpoint_path)) as checkpointer:
+        await checkpointer.setup()
+        await checkpointer.adelete_thread(thread_id)
+
+
 def initial_state(lease: BeaconLease) -> BeaconState:
     run = lease.run
     return {
@@ -285,14 +296,11 @@ async def run_graph(
                 result = await graph.ainvoke(None, config)
         elif snapshot.values:
             state = dict(snapshot.values)
-            await checkpointer.adelete_thread(lease.run.thread_id)
             return GraphOutcome(state=state, awaiting_approval=False)
         else:
             result = await graph.ainvoke(initial_state(lease), config)
         state = dict(result)
         awaiting_approval = bool(state.get("__interrupt__"))
-        if not awaiting_approval:
-            await checkpointer.adelete_thread(lease.run.thread_id)
     if awaiting_approval:
         await emitter.emit(
             "awaiting_approval",

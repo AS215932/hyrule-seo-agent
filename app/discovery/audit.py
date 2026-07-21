@@ -59,8 +59,8 @@ def _audit_http(surfaces: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
                 )
             )
     home = surfaces.get("http:home", {})
-    home_text = str(home.get("text", "")).lower()
-    if home.get("status") == 200 and "application/ld+json" not in home_text:
+    home_text = str(home.get("text", ""))
+    if home.get("status") == 200 and not _has_valid_json_ld(home_text):
         findings.append(
             _finding(
                 "http.structured_data.missing",
@@ -149,20 +149,19 @@ def _audit_x402(surfaces: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
 
     openapi_operations = _paid_openapi_operations(openapi)
     manifest_operations = _manifest_operations(manifest)
-    if manifest_operations:
-        missing_from_openapi = sorted(manifest_operations - openapi_operations)
-        missing_from_manifest = sorted(openapi_operations - manifest_operations)
-        if missing_from_openapi or missing_from_manifest:
-            only_manifest = [f"{method} {path}" for method, path in missing_from_openapi]
-            only_openapi = [f"{method} {path}" for method, path in missing_from_manifest]
-            findings.append(
-                _finding(
-                    "x402.catalog.drift",
-                    "Manifest and OpenAPI catalogs have drifted",
-                    f"Only in manifest: {only_manifest[:10]}; only in OpenAPI: {only_openapi[:10]}.",
-                    severity="error",
-                )
+    missing_from_openapi = sorted(manifest_operations - openapi_operations)
+    missing_from_manifest = sorted(openapi_operations - manifest_operations)
+    if missing_from_openapi or missing_from_manifest:
+        only_manifest = [f"{method} {path}" for method, path in missing_from_openapi]
+        only_openapi = [f"{method} {path}" for method, path in missing_from_manifest]
+        findings.append(
+            _finding(
+                "x402.catalog.drift",
+                "Manifest and OpenAPI catalogs have drifted",
+                f"Only in manifest: {only_manifest[:10]}; only in OpenAPI: {only_openapi[:10]}.",
+                severity="error",
             )
+        )
 
     version = manifest.get("x402Version") or manifest.get("version")
     if str(version) not in {"2", "2.0", "v2"}:
@@ -225,11 +224,11 @@ def _record_url(value: Any) -> str | None:
     return None
 
 
-def _json_listing(text: str, markers: tuple[str, ...]) -> tuple[bool, str | None]:
+def _json_listing(text: str, markers: tuple[str, ...]) -> tuple[bool | None, str | None]:
     try:
         payload = json.loads(text)
     except json.JSONDecodeError, TypeError:
-        return False, None
+        return None, None
 
     def records(value: Any) -> list[dict[str, Any]]:
         found: list[dict[str, Any]] = []
@@ -274,6 +273,43 @@ class _AnchorParser(HTMLParser):
             self._text = []
 
 
+class _JsonLdParser(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__()
+        self._capturing = False
+        self._content: list[str] = []
+        self.valid_document = False
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag.lower() != "script":
+            return
+        media_type = next((value for key, value in attrs if key.lower() == "type"), None)
+        if isinstance(media_type, str) and media_type.strip().lower() == "application/ld+json":
+            self._capturing = True
+            self._content = []
+
+    def handle_data(self, data: str) -> None:
+        if self._capturing:
+            self._content.append(data)
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag.lower() != "script" or not self._capturing:
+            return
+        self._capturing = False
+        try:
+            value = json.loads("".join(self._content))
+        except json.JSONDecodeError, TypeError:
+            return
+        if isinstance(value, (dict, list)):
+            self.valid_document = True
+
+
+def _has_valid_json_ld(text: str) -> bool:
+    parser = _JsonLdParser()
+    parser.feed(text)
+    return parser.valid_document
+
+
 def _html_listing(text: str, base_url: str, markers: tuple[str, ...]) -> tuple[bool, str | None]:
     parser = _AnchorParser()
     parser.feed(text)
@@ -290,11 +326,13 @@ def _html_listing(text: str, base_url: str, markers: tuple[str, ...]) -> tuple[b
 
 def _listing_result(
     resource: dict[str, Any], spec: dict[str, Any], markers: tuple[str, ...]
-) -> tuple[bool, str | None]:
+) -> tuple[bool | None, str | None]:
     text = str(resource.get("text", ""))
     url = str(resource.get("url", ""))
     result_kind = spec.get("result_kind", "html")
     if result_kind == "json":
+        if resource.get("truncated"):
+            return None, None
         present, result_url = _json_listing(text, markers)
         return present, result_url or (url if present else None)
     if result_kind == "direct":
@@ -331,6 +369,18 @@ def _audit_distribution(evidence: dict[str, Any]) -> tuple[list[dict[str, Any]],
             )
             continue
         present, result_url = _listing_result(resource, spec, markers)
+        if present is None:
+            findings.append(
+                _finding(
+                    "distribution.measurement.unavailable",
+                    f"Could not measure {spec['name']}",
+                    "The JSON channel response was malformed or truncated; "
+                    "this remains unknown and is not counted as absent.",
+                    severity="info",
+                    channel_key=key,
+                )
+            )
+            continue
         observations.append(
             {
                 "channelKey": key,

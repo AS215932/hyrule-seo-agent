@@ -2,7 +2,11 @@ from __future__ import annotations
 
 import json
 
+import httpx
+
+import app.discovery.collect as collect_module
 from app.discovery.audit import audit_evidence
+from app.discovery.collect import _fetch
 
 
 def _resource(status: int, text: str = "", *, url: str = "https://example.test") -> dict:
@@ -31,6 +35,32 @@ def test_inaccessible_channel_is_unknown_not_false_observation() -> None:
     result = audit_evidence(evidence, ["distribution"])
     assert result["observations"] == []
     assert result["findings"][0]["code"] == "distribution.measurement.unavailable"
+
+
+def test_malformed_or_truncated_json_channel_is_unknown() -> None:
+    for resource in (
+        _resource(200, "<html>proxy challenge</html>"),
+        {**_resource(200, '{"results": []}'), "truncated": True},
+    ):
+        evidence = {
+            "surfaces": {},
+            "channels": {"mcp_registry": resource},
+            "channel_specs": [
+                {
+                    "key": "mcp_registry",
+                    "name": "MCP Registry",
+                    "priority": "high",
+                    "measurement": "presence",
+                    "result_kind": "json",
+                }
+            ],
+            "markers": ["hyrule"],
+        }
+
+        result = audit_evidence(evidence, ["distribution"])
+
+        assert result["observations"] == []
+        assert result["findings"][0]["code"] == "distribution.measurement.unavailable"
 
 
 def test_public_listing_presence_is_measured_without_inventing_rank() -> None:
@@ -72,6 +102,85 @@ def test_x402_manifest_openapi_drift_is_deterministic() -> None:
     codes = {finding["code"] for finding in result["findings"]}
     assert "x402.catalog.drift" in codes
     assert "x402.intent_descriptions.weak" in codes
+
+
+def test_empty_manifest_is_catalog_drift_when_openapi_has_paid_operations() -> None:
+    evidence = {
+        "surfaces": {
+            "x402:openapi": _resource(
+                200,
+                '{"paths":{"/v1/dns/lookup":{"post":{'
+                '"description":"Resolve public DNS records through Hyrule Cloud.",'
+                '"x-payment-info":{}}}}}',
+            ),
+            "x402:manifest": _resource(200, '{"x402Version":2,"resources":[]}'),
+        }
+    }
+
+    result = audit_evidence(evidence, ["x402"])
+
+    assert "x402.catalog.drift" in {finding["code"] for finding in result["findings"]}
+
+
+def test_json_ld_requires_a_valid_script_element() -> None:
+    base = {
+        "http:robots": _resource(200),
+        "http:sitemap": _resource(200),
+        "http:llms": _resource(200),
+    }
+    false_positive = audit_evidence(
+        {
+            "surfaces": {
+                **base,
+                "http:home": _resource(
+                    200, "<!-- application/ld+json --> <script>const example='application/ld+json'</script>"
+                ),
+            }
+        },
+        ["http"],
+    )
+    valid = audit_evidence(
+        {
+            "surfaces": {
+                **base,
+                "http:home": _resource(
+                    200,
+                    '<script type="application/ld+json">'
+                    '{"@context":"https://schema.org","@type":"Organization"}'
+                    "</script>",
+                ),
+            }
+        },
+        ["http"],
+    )
+
+    assert "http.structured_data.missing" in {finding["code"] for finding in false_positive["findings"]}
+    assert "http.structured_data.missing" not in {finding["code"] for finding in valid["findings"]}
+
+
+class _CountingStream(httpx.AsyncByteStream):
+    def __init__(self) -> None:
+        self.yielded = 0
+
+    async def __aiter__(self):
+        for chunk in (b"1234", b"5678", b"must-not-be-read"):
+            self.yielded += 1
+            yield chunk
+
+
+async def test_evidence_collection_stops_streaming_at_the_cap(monkeypatch) -> None:
+    stream = _CountingStream()
+    monkeypatch.setattr(collect_module, "MAX_EVIDENCE_BYTES", 5)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, stream=stream, request=request)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        resource = await _fetch(client, "surface", "https://example.test/large")
+
+    assert resource["text"] == "12345"
+    assert resource["truncated"] is True
+    assert stream.yielded == 2
 
 
 def test_full_openapi_free_and_authenticated_routes_are_not_catalog_drift() -> None:

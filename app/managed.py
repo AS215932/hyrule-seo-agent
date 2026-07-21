@@ -7,9 +7,10 @@ import contextlib
 import httpx
 import structlog
 
-from app.beacon.client import BeaconClient, BeaconProtocolError
+from app.beacon.client import BeaconClient
+from app.beacon.models import BeaconLease
 from app.config import Settings
-from app.graph import run_graph
+from app.graph import GraphOutcome, delete_graph_checkpoint, run_graph
 from app.store import Store
 
 log = structlog.get_logger()
@@ -28,6 +29,7 @@ class ManagedWorker:
         self._task: asyncio.Task[None] | None = None
         self.current_run_id: str | None = None
         self.last_error: str | None = None
+        self.finding_counts: dict[str, int] = {}
 
     def start(self) -> None:
         if self._task is not None:
@@ -53,37 +55,111 @@ class ManagedWorker:
             name=f"beacon-lease-renewal-{lease.run.id}",
         )
         try:
-            outcome = await run_graph(
+            try:
+                outcome = await self._run_with_lease_guard(lease, renewal)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                await self._report_graph_failure(lease, exc)
+                return True
+
+            self.finding_counts = self._count_findings(outcome)
+            if outcome.awaiting_approval:
+                self.last_error = None
+                return True
+
+            failed = [
+                execution
+                for execution in outcome.state.get("executions", [])
+                if isinstance(execution, dict) and execution.get("status") == "failed"
+            ]
+            status = "failed" if failed else "succeeded"
+            error_message = f"{len(failed)} automatic action execution(s) failed" if failed else None
+            try:
+                await self._client.complete(
+                    lease.run.id,
+                    lease.lease_token,
+                    status=status,
+                    error_message=error_message,
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                self.last_error = f"{type(exc).__name__}: {str(exc)[:500]}"
+                log.exception(
+                    "beacon_completion_not_acknowledged",
+                    run_id=lease.run.id,
+                    completion_status=status,
+                )
+                return True
+            await self._delete_acknowledged_checkpoint(lease)
+            self.last_error = error_message
+            return True
+        finally:
+            renewal.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await renewal
+            self.current_run_id = None
+
+    async def _run_with_lease_guard(
+        self,
+        lease: BeaconLease,
+        renewal: asyncio.Task[None],
+    ) -> GraphOutcome:
+        graph = asyncio.create_task(
+            run_graph(
                 lease=lease,
                 beacon=self._client,
                 settings=self._settings,
                 store=self._store,
                 http=self._http,
+            ),
+            name=f"beacon-graph-{lease.run.id}",
+        )
+        try:
+            done, _ = await asyncio.wait({graph, renewal}, return_when=asyncio.FIRST_COMPLETED)
+            if renewal in done:
+                await renewal
+                raise RuntimeError("lease renewal task stopped unexpectedly")
+            return await graph
+        finally:
+            if not graph.done():
+                graph.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await graph
+
+    async def _report_graph_failure(self, lease: BeaconLease, exc: Exception) -> None:
+        self.last_error = f"{type(exc).__name__}: {str(exc)[:500]}"
+        log.exception("beacon_run_failed", run_id=lease.run.id)
+        try:
+            await self._client.complete(
+                lease.run.id,
+                lease.lease_token,
+                status="failed",
+                error_message=self.last_error,
             )
-            if not outcome.awaiting_approval:
-                await self._client.complete(
-                    lease.run.id, lease.lease_token, status="succeeded"
-                )
-            self.last_error = None
-            return True
-        except asyncio.CancelledError:
-            raise
+        except Exception:
+            log.exception("beacon_failure_not_acknowledged", run_id=lease.run.id)
+            return
+        await self._delete_acknowledged_checkpoint(lease)
+
+    async def _delete_acknowledged_checkpoint(self, lease: BeaconLease) -> None:
+        try:
+            await delete_graph_checkpoint(self._settings, lease.run.thread_id)
         except Exception as exc:
             self.last_error = f"{type(exc).__name__}: {str(exc)[:500]}"
-            log.exception("beacon_run_failed", run_id=lease.run.id)
-            with contextlib.suppress(httpx.HTTPError, BeaconProtocolError):
-                await self._client.complete(
-                    lease.run.id,
-                    lease.lease_token,
-                    status="failed",
-                    error_message=self.last_error,
-                )
-            return True
-        finally:
-            renewal.cancel()
-            with contextlib.suppress(asyncio.CancelledError, BeaconProtocolError, httpx.HTTPError):
-                await renewal
-            self.current_run_id = None
+            log.exception("beacon_checkpoint_cleanup_failed", run_id=lease.run.id)
+
+    @staticmethod
+    def _count_findings(outcome: GraphOutcome) -> dict[str, int]:
+        counts: dict[str, int] = {}
+        for finding in outcome.state.get("findings", []):
+            if not isinstance(finding, dict):
+                continue
+            severity = finding.get("severity")
+            if isinstance(severity, str):
+                counts[severity] = counts.get(severity, 0) + 1
+        return counts
 
     async def _renew_lease(self, run_id: str, lease_token: str) -> None:
         while True:
@@ -104,9 +180,7 @@ class ManagedWorker:
                 await asyncio.sleep(self._settings.beacon_poll_interval_s)
 
 
-async def run_one_managed_lease(
-    settings: Settings, store: Store, http: httpx.AsyncClient
-) -> bool:
+async def run_one_managed_lease(settings: Settings, store: Store, http: httpx.AsyncClient) -> bool:
     """CLI/test seam: lease and execute at most one control-plane run."""
 
     if not settings.beacon_configured:

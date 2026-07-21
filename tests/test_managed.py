@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -38,12 +39,15 @@ class FakeClient:
         self.next_lease = lease
         self.completions: list[tuple[str, str | None]] = []
         self.renewals = 0
+        self.completion_error: Exception | None = None
 
     async def lease(self):
         value, self.next_lease = self.next_lease, None
         return value
 
     async def complete(self, run_id, lease_token, *, status, error_message=None):
+        if self.completion_error is not None:
+            raise self.completion_error
         self.completions.append((status, error_message))
         return {}
 
@@ -73,9 +77,7 @@ async def test_run_once_handles_no_work(worker_deps) -> None:
     assert await worker.run_once() is False
 
 
-async def test_run_once_completes_success_and_pauses_without_completion(
-    worker_deps, monkeypatch
-) -> None:
+async def test_run_once_completes_success_and_pauses_without_completion(worker_deps, monkeypatch) -> None:
     settings, store, http = worker_deps
     worker = ManagedWorker(settings=settings, store=store, http=http)
     fake = FakeClient(_lease())
@@ -114,6 +116,77 @@ async def test_run_once_records_failure_and_reports_it(worker_deps, monkeypatch)
     assert worker.last_error == "ValueError: bad graph"
     assert fake.completions[0][0] == "failed"
     assert "bad graph" in (fake.completions[0][1] or "")
+
+
+async def test_failed_execution_completes_the_run_as_failed(worker_deps, monkeypatch) -> None:
+    settings, store, http = worker_deps
+    worker = ManagedWorker(settings=settings, store=store, http=http)
+    fake = FakeClient(_lease())
+    worker._client = fake
+
+    async def action_failed(**kwargs):
+        return GraphOutcome(
+            state={
+                "findings": [{"severity": "warning"}],
+                "executions": [{"idempotencyKey": "indexnow", "status": "failed"}],
+            },
+            awaiting_approval=False,
+        )
+
+    monkeypatch.setattr(managed_module, "run_graph", action_failed)
+
+    assert await worker.run_once() is True
+    assert fake.completions == [("failed", "1 automatic action execution(s) failed")]
+    assert worker.finding_counts == {"warning": 1}
+
+
+async def test_completion_failure_retains_the_terminal_checkpoint(worker_deps, monkeypatch) -> None:
+    settings, store, http = worker_deps
+    worker = ManagedWorker(settings=settings, store=store, http=http)
+    fake = FakeClient(_lease())
+    fake.completion_error = httpx.ConnectError("control plane unavailable")
+    worker._client = fake
+    deleted: list[str] = []
+
+    async def success(**kwargs):
+        return GraphOutcome(state={"findings": [], "executions": []}, awaiting_approval=False)
+
+    async def record_delete(settings, thread_id):
+        deleted.append(thread_id)
+
+    monkeypatch.setattr(managed_module, "run_graph", success)
+    monkeypatch.setattr(managed_module, "delete_graph_checkpoint", record_delete)
+
+    assert await worker.run_once() is True
+    assert deleted == []
+    assert "control plane unavailable" in (worker.last_error or "")
+
+
+async def test_renewal_failure_cancels_the_active_graph(worker_deps, monkeypatch) -> None:
+    settings, store, http = worker_deps
+    worker = ManagedWorker(settings=settings, store=store, http=http)
+    fake = FakeClient(_lease())
+    worker._client = fake
+    cancelled = False
+
+    async def renewal_failed(run_id, lease_token):
+        raise httpx.ConnectError("heartbeat failed")
+
+    async def slow_graph(**kwargs):
+        nonlocal cancelled
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            cancelled = True
+            raise
+
+    monkeypatch.setattr(worker, "_renew_lease", renewal_failed)
+    monkeypatch.setattr(managed_module, "run_graph", slow_graph)
+
+    assert await worker.run_once() is True
+    assert cancelled is True
+    assert fake.completions[0][0] == "failed"
+    assert "heartbeat failed" in (fake.completions[0][1] or "")
 
 
 async def test_start_and_stop_are_idempotent(worker_deps) -> None:

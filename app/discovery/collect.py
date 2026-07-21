@@ -135,18 +135,28 @@ def _surface_urls(settings: Settings, scopes: set[str]) -> dict[str, str]:
 async def _fetch(client: httpx.AsyncClient, key: str, url: str) -> dict[str, Any]:
     observed_at = datetime.now(UTC).isoformat()
     try:
-        response = await client.get(url, follow_redirects=True)
-        body = response.content[:MAX_EVIDENCE_BYTES]
-        content_type = response.headers.get("content-type", "")[:200]
-        text = body.decode(response.encoding or "utf-8", errors="replace")
+        async with client.stream("GET", url, follow_redirects=True) as response:
+            buffered = bytearray()
+            truncated = False
+            async for chunk in response.aiter_bytes():
+                remaining = MAX_EVIDENCE_BYTES + 1 - len(buffered)
+                buffered.extend(chunk[:remaining])
+                if len(buffered) > MAX_EVIDENCE_BYTES:
+                    truncated = True
+                    break
+            body = bytes(buffered[:MAX_EVIDENCE_BYTES])
+            content_type = response.headers.get("content-type", "")[:200]
+            text = body.decode(response.encoding or "utf-8", errors="replace")
+            response_url = str(response.url)
+            status_code = response.status_code
         return {
             "key": key,
-            "url": str(response.url),
+            "url": response_url,
             "requested_url": url,
-            "status": response.status_code,
+            "status": status_code,
             "content_type": content_type,
             "sha256": hashlib.sha256(body).hexdigest(),
-            "truncated": len(response.content) > len(body),
+            "truncated": truncated,
             "text": text,
             "observed_at": observed_at,
             "error": None,

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
@@ -32,3 +33,22 @@ def test_metrics_exposes_prometheus_series(client: TestClient) -> None:
     r = client.get("/metrics")
     assert r.status_code == 200
     assert "seo_agent_active_findings" in r.text
+
+
+def test_managed_health_uses_current_graph_findings_not_legacy_store(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        client.app.state,
+        "managed",
+        SimpleNamespace(
+            current_run_id="run-1",
+            last_error=None,
+            finding_counts={"error": 1, "warning": 2},
+        ),
+    )
+
+    body = client.get("/health").json()
+
+    assert body["active_findings"] == {"error": 1, "warning": 2}
+    assert body["last_runs"] == []

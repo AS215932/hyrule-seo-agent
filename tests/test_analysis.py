@@ -15,9 +15,7 @@ def test_model_id_reads_policy_and_falls_back(tmp_path: Path) -> None:
     policy = tmp_path / "models.toml"
     policy.write_text('[model]\nprimary = "openrouter:test/model"\n')
     assert analysis._model_id(Settings(model_policy_path=str(policy))) == "openrouter:test/model"
-    assert analysis._model_id(Settings(model_policy_path=str(tmp_path / "missing"))).startswith(
-        "openrouter:"
-    )
+    assert analysis._model_id(Settings(model_policy_path=str(tmp_path / "missing"))).startswith("openrouter:")
 
 
 def test_model_rejects_unknown_provider() -> None:
@@ -68,4 +66,17 @@ async def test_model_failure_falls_back_without_blocking(monkeypatch) -> None:
         [{"code": "x"}],
         [],
     )
+    assert result is None
+
+
+async def test_invalid_model_policy_falls_back_without_blocking(tmp_path: Path) -> None:
+    policy = tmp_path / "invalid.toml"
+    policy.write_text("[model\ninvalid", encoding="utf-8")
+
+    result = await analyze_with_model(
+        Settings(openrouter_api_key="key", model_policy_path=str(policy)),
+        [{"code": "x402.drift"}],
+        [],
+    )
+
     assert result is None

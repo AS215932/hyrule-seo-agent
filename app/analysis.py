@@ -66,8 +66,6 @@ async def analyze_with_model(
 
     if not settings.openrouter_api_key or not findings:
         return None
-    from pydantic_ai import Agent
-
     normalized = {
         "findings": [
             {
@@ -88,8 +86,11 @@ async def analyze_with_model(
             for item in observations[:80]
         ],
     }
-    model_id = _model_id(settings)
+    model_id = "unresolved"
     try:
+        from pydantic_ai import Agent
+
+        model_id = _model_id(settings)
         agent: Any = Agent(
             _model(model_id, settings.openrouter_api_key),
             output_type=VisibilityAnalysis,

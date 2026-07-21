@@ -9,7 +9,7 @@ import httpx
 
 from app.beacon.models import BeaconLease, ExistingEvent, RunAction, WorkerEvent
 from app.config import Settings
-from app.graph import run_graph
+from app.graph import delete_graph_checkpoint, run_graph
 from app.store import Store
 
 
@@ -107,6 +107,16 @@ async def test_graph_checkpoints_at_approval_and_resumes_same_thread(tmp_path: P
     result = next(event for event in recorder.events if event.type == "action_result")
     assert result.data["status"] == "manual_required"
     assert resumed.state["summary"]["actions"] == 1
+    with sqlite3.connect(tmp_path / "beacon-checkpoints.sqlite") as checkpoint_db:
+        assert (
+            checkpoint_db.execute("SELECT count(*) FROM checkpoints WHERE thread_id = ?", ("thread-graph",)).fetchone()[
+                0
+            ]
+            > 0
+        )
+
+    await delete_graph_checkpoint(settings, "thread-graph")
+
     with sqlite3.connect(tmp_path / "beacon-checkpoints.sqlite") as checkpoint_db:
         assert checkpoint_db.execute(
             "SELECT count(*) FROM checkpoints WHERE thread_id = ?", ("thread-graph",)
