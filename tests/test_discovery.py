@@ -5,6 +5,7 @@ import json
 import httpx
 
 import app.discovery.collect as collect_module
+from app.config import Settings
 from app.discovery.audit import audit_evidence
 from app.discovery.collect import _fetch
 
@@ -97,6 +98,51 @@ def test_malformed_or_truncated_json_channel_is_unknown() -> None:
 
         assert result["observations"] == []
         assert result["findings"][0]["code"] == "distribution.measurement.unavailable"
+
+
+def test_schema_invalid_json_channel_is_unknown() -> None:
+    for body in ('{"error":"rate limited"}', '"unexpected"', "42"):
+        evidence = {
+            "surfaces": _distribution_surfaces(),
+            "channels": {"catalog": _resource(200, body)},
+            "channel_specs": [
+                {
+                    "key": "catalog",
+                    "name": "Catalog",
+                    "priority": "high",
+                    "measurement": "presence",
+                    "result_kind": "json",
+                }
+            ],
+            "markers": ["hyrule"],
+        }
+        result = audit_evidence(evidence, ["distribution"])
+        assert result["observations"] == []
+        assert result["findings"][0]["code"] == "distribution.measurement.unavailable"
+
+
+def test_distribution_sources_follow_configured_repositories() -> None:
+    settings = Settings(
+        skills_repository_url="https://github.com/acme/skills-fork",
+        mcp_server_url="https://github.com/acme/mcp-fork.git",
+    )
+    urls = collect_module._surface_urls(settings, {"distribution"})
+    assert urls["skills:umbrella"].startswith("https://raw.githubusercontent.com/acme/skills-fork/main/")
+    assert urls["mcp:descriptor"].startswith("https://raw.githubusercontent.com/acme/mcp-fork/main/")
+
+
+def test_truncated_x402_documents_remain_unknown() -> None:
+    for key in ("x402:openapi", "x402:manifest"):
+        surfaces = {
+            "x402:openapi": _resource(200, '{"paths":{}}'),
+            "x402:manifest": _resource(200, '{"x402Version":2,"resources":[]}'),
+            "x402:health": _resource(200),
+        }
+        surfaces[key] = {**surfaces[key], "truncated": True}
+        result = audit_evidence({"surfaces": surfaces}, ["x402"])
+        codes = {finding["code"] for finding in result["findings"]}
+        assert f"x402.{key.removeprefix('x402:')}.validation_unavailable" in codes
+        assert f"x402.{key.removeprefix('x402:')}.invalid" not in codes
 
 
 def test_deep_json_channel_is_traversed_without_recursion_failure() -> None:

@@ -52,3 +52,15 @@ def test_managed_health_uses_current_graph_findings_not_legacy_store(
 
     assert body["active_findings"] == {"error": 1, "warning": 2}
     assert body["last_runs"] == []
+
+
+def test_managed_health_reports_legacy_scheduler_as_stopped(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        client.app.state, "managed", SimpleNamespace(current_run_id=None, last_error=None, finding_counts={})
+    )
+    monkeypatch.setattr(client.app.state, "scheduler_running", False)
+    monkeypatch.setattr(settings, "scheduler_enabled", True)
+
+    assert client.get("/health").json()["scheduler_enabled"] is False

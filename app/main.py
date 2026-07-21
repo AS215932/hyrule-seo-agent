@@ -33,6 +33,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.deps = deps
     scheduler = Scheduler(deps)
     managed: ManagedWorker | None = None
+    scheduler_running = False
     if settings.beacon_managed_mode:
         if not settings.beacon_configured:
             raise RuntimeError("Managed mode requires BEACON_CONTROL_PLANE_URL and BEACON_WORKER_TOKEN")
@@ -40,7 +41,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         managed.start()
     elif settings.scheduler_enabled:
         scheduler.start()
+        scheduler_running = True
     app.state.managed = managed
+    app.state.scheduler_running = scheduler_running
     try:
         yield
     finally:
@@ -72,7 +75,7 @@ async def health() -> dict[str, Any]:
     return {
         "status": "ok",
         "environment": settings.environment,
-        "scheduler_enabled": settings.scheduler_enabled,
+        "scheduler_enabled": bool(app.state.scheduler_running),
         "beacon_managed_mode": settings.beacon_managed_mode,
         "beacon_configured": settings.beacon_configured,
         "beacon_current_run": (app.state.managed.current_run_id if app.state.managed is not None else None),

@@ -8,6 +8,7 @@ from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from typing import Any, Literal
 from urllib.parse import quote_plus
+from urllib.parse import urlsplit
 
 import httpx
 
@@ -124,13 +125,23 @@ def _surface_urls(settings: Settings, scopes: set[str]) -> dict[str, str]:
             }
         )
     if "distribution" in scopes:
+
+        def source_url(repository_url: str, path: str) -> str:
+            parsed = urlsplit(repository_url)
+            parts = parsed.path.strip("/").removesuffix(".git").split("/")
+            if parsed.hostname == "github.com" and len(parts) >= 2:
+                return f"https://raw.githubusercontent.com/{parts[0]}/{parts[1]}/main/{path}"
+            return f"{repository_url.rstrip('/')}/{path}"
+
         urls.update(
             {
-                "skills:umbrella": (
-                    "https://raw.githubusercontent.com/AS215932/hyrule-cloud/main/skills/hyrule-cloud/SKILL.md"
+                "skills:umbrella": source_url(
+                    settings.skills_repository_url,
+                    "skills/hyrule-cloud/SKILL.md",
                 ),
-                "mcp:descriptor": (
-                    "https://raw.githubusercontent.com/AS215932/hyrule-cloud/main/packages/hyrule-cloud-mcp/server.json"
+                "mcp:descriptor": source_url(
+                    settings.mcp_server_url,
+                    "packages/hyrule-cloud-mcp/server.json",
                 ),
             }
         )

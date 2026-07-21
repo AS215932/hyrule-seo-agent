@@ -65,9 +65,14 @@ def plan_actions(
         "http.sitemap.validation_unavailable",
         "http.structured_data.unavailable",
     }
+    non_actionable_x402_codes = {
+        "x402.openapi.validation_unavailable",
+        "x402.manifest.validation_unavailable",
+    }
     actionable_http_codes = {
         code for code in codes if code.startswith("http.") and code not in non_actionable_http_codes
     }
+    codes.difference_update(non_actionable_x402_codes)
     if "http" in scopes and actionable_http_codes:
         sitemap = evidence.get("surfaces", {}).get("http:sitemap", {})
         sitemap_source = str(sitemap.get("requested_url") or sitemap.get("url") or "")

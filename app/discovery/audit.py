@@ -39,7 +39,7 @@ def _evidence_key(resource: dict[str, Any] | None) -> str | None:
 
 
 def _json(resource: dict[str, Any] | None) -> dict[str, Any] | None:
-    if not resource or resource.get("status") != 200:
+    if not resource or resource.get("status") != 200 or resource.get("truncated"):
         return None
     try:
         value = json.loads(resource.get("text", ""))
@@ -200,6 +200,23 @@ def _audit_x402(surfaces: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
                 evidence_r2_key=_evidence_key(health),
             )
         )
+    truncated_documents = [
+        (key, label)
+        for key, label in (("x402:openapi", "OpenAPI"), ("x402:manifest", "manifest"))
+        if surfaces.get(key, {}).get("truncated")
+    ]
+    for key, label in truncated_documents:
+        findings.append(
+            _finding(
+                f"x402.{key.removeprefix('x402:')}.validation_unavailable",
+                f"x402 {label} validation is unavailable",
+                f"The x402 {label} exceeded the evidence limit and was not classified as invalid.",
+                severity="info",
+                evidence_r2_key=_evidence_key(surfaces.get(key)),
+            )
+        )
+    if truncated_documents:
+        return findings
     openapi = _json(surfaces.get("x402:openapi"))
     manifest = _json(surfaces.get("x402:manifest"))
     if openapi is None or not isinstance(openapi.get("paths"), dict):
@@ -352,7 +369,22 @@ def _json_listing(text: str, markers: tuple[str, ...]) -> tuple[bool | None, str
     except json.JSONDecodeError, TypeError, RecursionError:
         return None, None
 
-    for record in _json_records(payload):
+    if isinstance(payload, list):
+        records: Any = payload
+    elif isinstance(payload, dict):
+        containers = [
+            payload.get(key) for key in ("results", "resources", "servers", "items", "data") if key in payload
+        ]
+        records = next(
+            (container for container in containers if isinstance(container, (dict, list))),
+            None,
+        )
+        if records is None:
+            return None, None
+    else:
+        return None, None
+
+    for record in _json_records(records):
         if _contains_marker(record, markers):
             return True, _record_url(record)
     return False, None
