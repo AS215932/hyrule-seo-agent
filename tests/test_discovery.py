@@ -37,6 +37,29 @@ def test_inaccessible_channel_is_unknown_not_false_observation() -> None:
     assert result["findings"][0]["code"] == "distribution.measurement.unavailable"
 
 
+def test_non_200_channel_response_is_unknown_not_absent() -> None:
+    for status in (204, 302):
+        evidence = {
+            "surfaces": {},
+            "channels": {"catalog": _resource(status, "")},
+            "channel_specs": [
+                {
+                    "key": "catalog",
+                    "name": "Catalog",
+                    "priority": "high",
+                    "measurement": "presence",
+                    "result_kind": "html",
+                }
+            ],
+            "markers": ["hyrule"],
+        }
+
+        result = audit_evidence(evidence, ["distribution"])
+
+        assert result["observations"] == []
+        assert [finding["code"] for finding in result["findings"]] == ["distribution.measurement.unavailable"]
+
+
 def test_malformed_or_truncated_json_channel_is_unknown() -> None:
     for resource in (
         _resource(200, "<html>proxy challenge</html>"),
@@ -61,6 +84,29 @@ def test_malformed_or_truncated_json_channel_is_unknown() -> None:
 
         assert result["observations"] == []
         assert result["findings"][0]["code"] == "distribution.measurement.unavailable"
+
+
+def test_deep_json_channel_is_traversed_without_recursion_failure() -> None:
+    body = "[" * 1_200 + '{"name":"Hyrule","url":"https://cloud.hyrule.host"}' + "]" * 1_200
+    evidence = {
+        "surfaces": {},
+        "channels": {"catalog": _resource(200, body)},
+        "channel_specs": [
+            {
+                "key": "catalog",
+                "name": "Catalog",
+                "priority": "high",
+                "measurement": "presence",
+                "result_kind": "json",
+            }
+        ],
+        "markers": ["hyrule"],
+    }
+
+    result = audit_evidence(evidence, ["distribution"])
+
+    assert result["findings"] == []
+    assert result["observations"][0]["present"] is True
 
 
 def test_every_truncated_channel_kind_is_unknown() -> None:

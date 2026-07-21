@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Iterator
 from datetime import UTC, datetime
 from html.parser import HTMLParser
 from typing import Any
@@ -16,6 +17,7 @@ def _finding(
     *,
     severity: str = "warning",
     channel_key: str | None = None,
+    evidence_r2_key: str | None = None,
 ) -> dict[str, Any]:
     return {
         "surfaceId": None,
@@ -24,8 +26,15 @@ def _finding(
         "code": code,
         "title": title,
         "message": message,
-        "evidenceR2Key": None,
+        "evidenceR2Key": evidence_r2_key,
     }
+
+
+def _evidence_key(resource: dict[str, Any] | None) -> str | None:
+    if not resource:
+        return None
+    value = resource.get("evidence_r2_key")
+    return value if isinstance(value, str) and value else None
 
 
 def _json(resource: dict[str, Any] | None) -> dict[str, Any] | None:
@@ -56,6 +65,7 @@ def _audit_http(surfaces: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
                     f"Expected a 200 response for {label}; observed "
                     f"{resource.get('status') if resource else 'no response'}.",
                     severity="error" if key == "http:home" else "warning",
+                    evidence_r2_key=_evidence_key(resource),
                 )
             )
     home = surfaces.get("http:home", {})
@@ -66,6 +76,7 @@ def _audit_http(surfaces: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
                 "http.structured_data.missing",
                 "Homepage has no JSON-LD",
                 "Expose Organization, WebSite, and relevant SoftwareApplication or Service schema.",
+                evidence_r2_key=_evidence_key(home),
             )
         )
     tools = surfaces.get("http:tools")
@@ -75,6 +86,7 @@ def _audit_http(surfaces: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
                 "http.tools_index.missing",
                 "Curated tool index is missing",
                 "Publish a curated /tools index with unique intent-led pages for the strongest Hyrule capabilities.",
+                evidence_r2_key=_evidence_key(tools),
             )
         )
     return findings
@@ -132,6 +144,7 @@ def _audit_x402(surfaces: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
                 "x402 OpenAPI document is unavailable",
                 "The canonical /openapi.json must return a valid JSON object.",
                 severity="error",
+                evidence_r2_key=_evidence_key(surfaces.get("x402:openapi")),
             )
         )
         openapi = None
@@ -142,6 +155,7 @@ def _audit_x402(surfaces: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
                 "x402 discovery manifest is unavailable",
                 "The canonical /.well-known/x402.json must return a valid JSON object.",
                 severity="error",
+                evidence_r2_key=_evidence_key(surfaces.get("x402:manifest")),
             )
         )
     if openapi is None or manifest is None:
@@ -160,6 +174,7 @@ def _audit_x402(surfaces: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
                 "Manifest and OpenAPI catalogs have drifted",
                 f"Only in manifest: {only_manifest[:10]}; only in OpenAPI: {only_openapi[:10]}.",
                 severity="error",
+                evidence_r2_key=_evidence_key(surfaces.get("x402:openapi")),
             )
         )
 
@@ -170,6 +185,7 @@ def _audit_x402(surfaces: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
                 "x402.version.not_v2",
                 "Discovery metadata does not identify x402 v2",
                 f"Observed version {version!r}; publish current x402 v2 terminology and contracts.",
+                evidence_r2_key=_evidence_key(surfaces.get("x402:manifest")),
             )
         )
 
@@ -190,60 +206,63 @@ def _audit_x402(surfaces: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
                 "x402.intent_descriptions.weak",
                 "x402 operations lack intent-rich descriptions",
                 f"{weak_descriptions} operations have fewer than 40 description characters.",
+                evidence_r2_key=_evidence_key(surfaces.get("x402:openapi")),
             )
         )
     return findings
 
 
 def _contains_marker(value: Any, markers: tuple[str, ...]) -> bool:
-    if isinstance(value, str):
-        lowered = value.lower()
-        return any(marker in lowered for marker in markers)
-    if isinstance(value, dict):
-        return any(_contains_marker(item, markers) for item in value.values())
-    if isinstance(value, list):
-        return any(_contains_marker(item, markers) for item in value)
+    pending = [value]
+    while pending:
+        current = pending.pop()
+        if isinstance(current, str):
+            lowered = current.lower()
+            if any(marker in lowered for marker in markers):
+                return True
+        elif isinstance(current, dict):
+            pending.extend(current.values())
+        elif isinstance(current, list):
+            pending.extend(current)
     return False
 
 
 def _record_url(value: Any) -> str | None:
-    if isinstance(value, dict):
-        for key in ("url", "homepage", "website", "endpoint", "repository", "href"):
-            candidate = value.get(key)
-            if isinstance(candidate, str) and candidate.startswith(("https://", "http://")):
-                return candidate
-        for candidate in value.values():
-            found = _record_url(candidate)
-            if found:
-                return found
-    elif isinstance(value, list):
-        for candidate in value:
-            found = _record_url(candidate)
-            if found:
-                return found
+    pending = [value]
+    while pending:
+        current = pending.pop()
+        if isinstance(current, dict):
+            for key in ("url", "homepage", "website", "endpoint", "repository", "href"):
+                candidate = current.get(key)
+                if isinstance(candidate, str) and candidate.startswith(("https://", "http://")):
+                    return candidate
+            pending.extend(reversed(list(current.values())))
+        elif isinstance(current, list):
+            pending.extend(reversed(current))
     return None
+
+
+def _json_records(value: Any) -> Iterator[dict[str, Any]]:
+    pending = [value]
+    while pending:
+        current = pending.pop()
+        if isinstance(current, list):
+            for item in reversed(current):
+                if isinstance(item, dict):
+                    yield item
+                elif isinstance(item, list):
+                    pending.append(item)
+        elif isinstance(current, dict):
+            pending.extend(reversed(list(current.values())))
 
 
 def _json_listing(text: str, markers: tuple[str, ...]) -> tuple[bool | None, str | None]:
     try:
         payload = json.loads(text)
-    except json.JSONDecodeError, TypeError:
+    except json.JSONDecodeError, TypeError, RecursionError:
         return None, None
 
-    def records(value: Any) -> list[dict[str, Any]]:
-        found: list[dict[str, Any]] = []
-        if isinstance(value, list):
-            for item in value:
-                if isinstance(item, dict):
-                    found.append(item)
-                else:
-                    found.extend(records(item))
-        elif isinstance(value, dict):
-            for item in value.values():
-                found.extend(records(item))
-        return found
-
-    for record in records(payload):
+    for record in _json_records(payload):
         if _contains_marker(record, markers):
             return True, _record_url(record)
     return False, None
@@ -356,7 +375,7 @@ def _audit_distribution(evidence: dict[str, Any]) -> tuple[list[dict[str, Any]],
         if measurement in {"manual", "not_applicable"}:
             continue
         resource = channel_results.get(key, {})
-        if resource.get("status") == 0 or resource.get("status", 500) >= 400:
+        if resource.get("status") != 200:
             findings.append(
                 _finding(
                     "distribution.measurement.unavailable",
@@ -365,6 +384,7 @@ def _audit_distribution(evidence: dict[str, Any]) -> tuple[list[dict[str, Any]],
                     "this remains unknown and is not counted as absent.",
                     severity="info",
                     channel_key=key,
+                    evidence_r2_key=_evidence_key(resource),
                 )
             )
             continue
@@ -378,6 +398,7 @@ def _audit_distribution(evidence: dict[str, Any]) -> tuple[list[dict[str, Any]],
                     "this remains unknown and is not counted as absent.",
                     severity="info",
                     channel_key=key,
+                    evidence_r2_key=_evidence_key(resource),
                 )
             )
             continue
@@ -391,7 +412,7 @@ def _audit_distribution(evidence: dict[str, Any]) -> tuple[list[dict[str, Any]],
                 "score": None,
                 "resultName": "Hyrule Cloud" if present else None,
                 "resultUrl": result_url,
-                "evidenceR2Key": None,
+                "evidenceR2Key": _evidence_key(resource),
                 "observedAt": resource.get("observed_at", observed_at),
             }
         )
@@ -404,6 +425,7 @@ def _audit_distribution(evidence: dict[str, Any]) -> tuple[list[dict[str, Any]],
                     "search behavior before preparing a submission.",
                     severity="warning" if spec["priority"] in {"existing", "high"} else "info",
                     channel_key=key,
+                    evidence_r2_key=_evidence_key(resource),
                 )
             )
     return findings, observations

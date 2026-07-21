@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import json
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal, TypedDict, cast
@@ -41,6 +43,8 @@ class GraphDeps:
     store: Store
     http: Any
     emitter: EventEmitter
+    beacon: BeaconClient | None
+    lease_token: str
 
 
 @dataclass
@@ -82,6 +86,32 @@ def _build_graph(checkpointer: AsyncSqliteSaver, deps: GraphDeps):
     async def collect(state: BeaconState) -> dict[str, Any]:
         await deps.emitter.emit("node_started", "Collecting owned surfaces and public channels.", node="collect")
         evidence = await collect_evidence(deps.http, deps.settings, state["scopes"])
+        beacon = deps.beacon
+        if beacon is not None:
+            resources = [
+                resource
+                for group in ("surfaces", "channels")
+                for resource in evidence.get(group, {}).values()
+                if isinstance(resource, dict)
+            ]
+
+            async def upload(resource: dict[str, Any]) -> tuple[dict[str, Any], str]:
+                document = json.dumps(
+                    {"evidenceFormat": "hyrule-beacon-resource-v1", **resource},
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                    sort_keys=True,
+                ).encode()
+                uploaded = await beacon.upload_evidence(
+                    state["run_id"],
+                    deps.lease_token,
+                    document,
+                    content_type="application/json",
+                )
+                return resource, uploaded.key
+
+            for resource, evidence_key in await asyncio.gather(*(upload(resource) for resource in resources)):
+                resource["evidence_r2_key"] = evidence_key
         await deps.emitter.emit(
             "node_completed",
             "Public evidence collection completed.",
@@ -302,7 +332,14 @@ async def run_graph(
     checkpoint_path = Path(settings.data_dir) / "beacon-checkpoints.sqlite"
     checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
     emitter = EventEmitter(beacon, lease)
-    deps = GraphDeps(settings=settings, store=store, http=http, emitter=emitter)
+    deps = GraphDeps(
+        settings=settings,
+        store=store,
+        http=http,
+        emitter=emitter,
+        beacon=beacon,
+        lease_token=lease.lease_token,
+    )
     config = {"configurable": {"thread_id": lease.run.thread_id}}
     async with AsyncSqliteSaver.from_conn_string(str(checkpoint_path)) as checkpointer:
         await checkpointer.setup()

@@ -7,7 +7,7 @@ from pathlib import Path
 
 import httpx
 
-from app.beacon.models import BeaconLease, ExistingEvent, RunAction, WorkerEvent
+from app.beacon.models import BeaconLease, EvidenceUpload, ExistingEvent, RunAction, WorkerEvent
 from app.config import Settings
 from app.graph import delete_graph_checkpoint, run_graph
 from app.store import Store
@@ -16,9 +16,22 @@ from app.store import Store
 class RecordingBeacon:
     def __init__(self) -> None:
         self.events: list[WorkerEvent] = []
+        self.evidence: list[bytes] = []
 
     async def post_events(self, run_id: str, lease_token: str, events: list[WorkerEvent]) -> None:
         self.events.extend(events)
+
+    async def upload_evidence(
+        self,
+        run_id: str,
+        lease_token: str,
+        body: bytes,
+        *,
+        content_type: str,
+    ) -> EvidenceUpload:
+        self.evidence.append(body)
+        number = len(self.evidence)
+        return EvidenceUpload(key=f"evidence/{number}", sha256=f"{number:064x}", sizeBytes=len(body))
 
 
 def _lease(
@@ -82,6 +95,10 @@ async def test_graph_checkpoints_at_approval_and_resumes_same_thread(tmp_path: P
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
         first = await run_graph(lease=_lease(), beacon=recorder, settings=settings, store=store, http=http)
         assert first.awaiting_approval is True
+        assert recorder.evidence
+        audited_events = [event for event in recorder.events if event.type in {"finding", "observation"}]
+        assert audited_events
+        assert all(event.data["evidenceR2Key"].startswith("evidence/") for event in audited_events)
         proposal_event = next(event for event in recorder.events if event.type == "action_proposed")
         assert recorder.events[-1].type == "awaiting_approval"
 
