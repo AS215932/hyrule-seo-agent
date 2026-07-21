@@ -14,7 +14,12 @@ import httpx
 from app.config import Settings
 
 MAX_EVIDENCE_BYTES = 512_000
+MAX_REDIRECTS = 10
 HYRULE_MARKERS = ("hyrule", "cloud.hyrule.host", "as215932/hyrule-cloud")
+
+
+class _UnsafeRedirectError(Exception):
+    """A public channel attempted to leave its configured origin."""
 
 
 @dataclass(frozen=True)
@@ -132,23 +137,52 @@ def _surface_urls(settings: Settings, scopes: set[str]) -> dict[str, str]:
     return urls
 
 
-async def _fetch(client: httpx.AsyncClient, key: str, url: str) -> dict[str, Any]:
+async def _fetch(
+    client: httpx.AsyncClient,
+    key: str,
+    url: str,
+    *,
+    restrict_redirects_to_origin: bool = False,
+) -> dict[str, Any]:
     observed_at = datetime.now(UTC).isoformat()
     try:
-        async with client.stream("GET", url, follow_redirects=True) as response:
-            buffered = bytearray()
-            truncated = False
-            async for chunk in response.aiter_bytes():
-                remaining = MAX_EVIDENCE_BYTES + 1 - len(buffered)
-                buffered.extend(chunk[:remaining])
-                if len(buffered) > MAX_EVIDENCE_BYTES:
-                    truncated = True
-                    break
-            body = bytes(buffered[:MAX_EVIDENCE_BYTES])
-            content_type = response.headers.get("content-type", "")[:200]
-            text = body.decode(response.encoding or "utf-8", errors="replace")
-            response_url = str(response.url)
-            status_code = response.status_code
+        initial = httpx.URL(url)
+        initial_origin = (initial.scheme, initial.host, initial.port)
+        current_url = url
+        redirect_count = 0
+        while True:
+            async with client.stream("GET", current_url, follow_redirects=False) as response:
+                if response.has_redirect_location:
+                    location = response.headers["location"]
+                    try:
+                        target = response.url.join(location)
+                    except (httpx.InvalidURL, ValueError) as exc:
+                        raise _UnsafeRedirectError("redirect target is malformed") from exc
+                    target_origin = (target.scheme, target.host, target.port)
+                    if target.scheme not in {"http", "https"} or not target.host:
+                        raise _UnsafeRedirectError("redirect target is not HTTP(S)")
+                    if restrict_redirects_to_origin and target_origin != initial_origin:
+                        raise _UnsafeRedirectError("redirect target left the configured public origin")
+                    redirect_count += 1
+                    if redirect_count > MAX_REDIRECTS:
+                        raise _UnsafeRedirectError("redirect limit exceeded")
+                    current_url = str(target)
+                    continue
+
+                buffered = bytearray()
+                truncated = False
+                async for chunk in response.aiter_bytes():
+                    remaining = MAX_EVIDENCE_BYTES + 1 - len(buffered)
+                    buffered.extend(chunk[:remaining])
+                    if len(buffered) > MAX_EVIDENCE_BYTES:
+                        truncated = True
+                        break
+                body = bytes(buffered[:MAX_EVIDENCE_BYTES])
+                content_type = response.headers.get("content-type", "")[:200]
+                text = body.decode(response.encoding or "utf-8", errors="replace")
+                response_url = str(response.url)
+                status_code = response.status_code
+                break
         return {
             "key": key,
             "url": response_url,
@@ -161,7 +195,7 @@ async def _fetch(client: httpx.AsyncClient, key: str, url: str) -> dict[str, Any
             "observed_at": observed_at,
             "error": None,
         }
-    except (httpx.HTTPError, UnicodeError) as exc:
+    except (httpx.HTTPError, UnicodeError, _UnsafeRedirectError) as exc:
         return {
             "key": key,
             "url": url,
@@ -184,7 +218,15 @@ async def collect_evidence(client: httpx.AsyncClient, settings: Settings, scopes
     channel_list = channel_specs(settings) if "distribution" in scope_set else ()
     surface_tasks = [_fetch(client, key, url) for key, url in surfaces.items()]
     fetchable_channels = [spec for spec in channel_list if spec.url]
-    channel_tasks = [_fetch(client, f"channel:{spec.key}", spec.url or "") for spec in fetchable_channels]
+    channel_tasks = [
+        _fetch(
+            client,
+            f"channel:{spec.key}",
+            spec.url or "",
+            restrict_redirects_to_origin=True,
+        )
+        for spec in fetchable_channels
+    ]
     results = await asyncio.gather(*surface_tasks, *channel_tasks)
     surface_count = len(surface_tasks)
     channel_results = {result["key"].removeprefix("channel:"): result for result in results[surface_count:]}

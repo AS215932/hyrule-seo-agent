@@ -70,6 +70,18 @@ async def test_change_triggers_ping_with_key_location(store: Store, settings: Se
     assert "https://hyrule.host/new" in payload["urlList"]
 
 
+async def test_sitemap_redirect_is_followed(store: Store, settings: Settings) -> None:
+    canonical = "https://hyrule.host/sitemaps/current.xml"
+    with respx.mock(assert_all_called=True) as router:
+        router.get("https://hyrule.host/sitemap.xml").respond(302, headers={"Location": canonical})
+        router.get(canonical).respond(200, text=_SITEMAP_V1)
+        async with httpx.AsyncClient() as client:
+            result = await indexnow.ping_if_changed(client, store, settings)
+
+    assert result.status == "seeded"
+    assert await store.get_kv("sitemap_sha256") is not None
+
+
 async def test_unchanged_sitemap_is_silent(store: Store, settings: Settings) -> None:
     with respx.mock(assert_all_called=False) as router:
         router.get("https://hyrule.host/sitemap.xml").respond(200, text=_SITEMAP_V1)

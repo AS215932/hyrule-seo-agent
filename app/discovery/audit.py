@@ -131,8 +131,11 @@ def _audit_http(surfaces: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
     return findings
 
 
-def _normalized_path(value: str) -> str:
-    parsed = urlsplit(value)
+def _normalized_path(value: str) -> str | None:
+    try:
+        parsed = urlsplit(value)
+    except ValueError:
+        return None
     path = parsed.path or "/"
     if not path.startswith("/"):
         path = f"/{path}"
@@ -147,7 +150,7 @@ def _manifest_catalog(manifest: dict[str, Any]) -> list[Any] | None:
     return None
 
 
-def _manifest_operations(candidates: list[Any]) -> set[tuple[str, str]]:
+def _manifest_operations(candidates: list[Any]) -> set[tuple[str, str]] | None:
     operations: set[tuple[str, str]] = set()
     for item in candidates:
         if not isinstance(item, dict):
@@ -155,11 +158,14 @@ def _manifest_operations(candidates: list[Any]) -> set[tuple[str, str]]:
         method = item.get("method")
         path = item.get("path") or item.get("resource") or item.get("url")
         if isinstance(method, str) and isinstance(path, str):
-            operations.add((method.upper(), _normalized_path(path)))
+            normalized = _normalized_path(path)
+            if normalized is None:
+                return None
+            operations.add((method.upper(), normalized))
     return operations
 
 
-def _paid_openapi_operations(openapi: dict[str, Any]) -> set[tuple[str, str]]:
+def _paid_openapi_operations(openapi: dict[str, Any]) -> set[tuple[str, str]] | None:
     methods = {"get", "post", "put", "delete", "patch", "head", "options", "trace"}
     operations: set[tuple[str, str]] = set()
     paths = openapi.get("paths")
@@ -174,7 +180,10 @@ def _paid_openapi_operations(openapi: dict[str, Any]) -> set[tuple[str, str]]:
                 and isinstance(operation, dict)
                 and isinstance(operation.get("x-payment-info"), dict)
             ):
-                operations.add((method.upper(), _normalized_path(path)))
+                normalized = _normalized_path(path)
+                if normalized is None:
+                    return None
+                operations.add((method.upper(), normalized))
     return operations
 
 
@@ -222,6 +231,28 @@ def _audit_x402(surfaces: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
 
     openapi_operations = _paid_openapi_operations(openapi)
     manifest_operations = _manifest_operations(manifest_catalog)
+    if openapi_operations is None:
+        findings.append(
+            _finding(
+                "x402.openapi.invalid",
+                "x402 OpenAPI document is unavailable",
+                "The canonical /openapi.json contains a malformed operation path.",
+                severity="error",
+                evidence_r2_key=_evidence_key(surfaces.get("x402:openapi")),
+            )
+        )
+    if manifest_operations is None:
+        findings.append(
+            _finding(
+                "x402.manifest.invalid",
+                "x402 discovery manifest is unavailable",
+                "The canonical /.well-known/x402.json contains a malformed resource URL or path.",
+                severity="error",
+                evidence_r2_key=_evidence_key(surfaces.get("x402:manifest")),
+            )
+        )
+    if openapi_operations is None or manifest_operations is None:
+        return findings
     missing_from_openapi = sorted(manifest_operations - openapi_operations)
     missing_from_manifest = sorted(openapi_operations - manifest_operations)
     if missing_from_openapi or missing_from_manifest:
@@ -419,8 +450,11 @@ def _html_listing(text: str, base_url: str, markers: tuple[str, ...]) -> tuple[b
     parser = _AnchorParser()
     parser.feed(text)
     for href, label in parser.anchors:
-        resolved = urljoin(base_url, href)
-        parsed = urlsplit(resolved)
+        try:
+            resolved = urljoin(base_url, href)
+            parsed = urlsplit(resolved)
+        except ValueError:
+            continue
         # Search forms commonly echo the query in `?q=...`; only visible link
         # text or the destination itself is evidence of an actual result.
         destination = unquote(f"{parsed.netloc}{parsed.path}{parsed.fragment}").lower()

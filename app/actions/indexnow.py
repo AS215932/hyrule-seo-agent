@@ -40,7 +40,7 @@ async def ping_if_changed(client: httpx.AsyncClient, store: Store, settings: Set
     if not settings.indexnow_key:
         return IndexNowResult("manual_required", "IndexNow key is not configured.")
     try:
-        resp = await client.get(f"{settings.site_base_url}/sitemap.xml")
+        resp = await client.get(f"{settings.site_base_url}/sitemap.xml", follow_redirects=True)
         resp.raise_for_status()
     except httpx.HTTPError as exc:
         log.warning("indexnow_sitemap_fetch_failed", error=str(exc))

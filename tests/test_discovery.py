@@ -242,6 +242,34 @@ def test_manifest_rejects_non_array_catalog_shapes() -> None:
         assert "x402.manifest.invalid" in {finding["code"] for finding in result["findings"]}
 
 
+def test_malformed_catalog_urls_are_reported_instead_of_crashing() -> None:
+    cases = (
+        (
+            '{"paths":{"https://[broken":{"get":{"x-payment-info":{}}}}}',
+            '{"x402Version":2,"resources":[]}',
+            "x402.openapi.invalid",
+        ),
+        (
+            '{"paths":{}}',
+            '{"x402Version":2,"resources":[{"method":"GET","url":"https://[broken"}]}',
+            "x402.manifest.invalid",
+        ),
+    )
+    for openapi, manifest, expected_code in cases:
+        result = audit_evidence(
+            {
+                "surfaces": {
+                    "x402:openapi": _resource(200, openapi),
+                    "x402:manifest": _resource(200, manifest),
+                    "x402:health": _resource(200),
+                }
+            },
+            ["x402"],
+        )
+
+        assert expected_code in {finding["code"] for finding in result["findings"]}
+
+
 def test_empty_manifest_is_catalog_drift_when_openapi_has_paid_operations() -> None:
     evidence = {
         "surfaces": {
@@ -404,6 +432,47 @@ async def test_evidence_collection_stops_streaming_at_the_cap(monkeypatch) -> No
     assert stream.yielded == 2
 
 
+async def test_public_channel_redirect_cannot_leave_configured_origin() -> None:
+    requested: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requested.append(str(request.url))
+        if request.url.host == "registry.example.test":
+            return httpx.Response(302, headers={"Location": "http://127.0.0.1:8080/private"})
+        raise AssertionError(f"private redirect was fetched: {request.url}")
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        resource = await _fetch(
+            client,
+            "channel:registry",
+            "https://registry.example.test/search",
+            restrict_redirects_to_origin=True,
+        )
+
+    assert requested == ["https://registry.example.test/search"]
+    assert resource["status"] == 0
+    assert "left the configured public origin" in resource["error"]
+
+
+async def test_public_channel_follows_same_origin_redirect() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/search":
+            return httpx.Response(302, headers={"Location": "/results"})
+        return httpx.Response(200, text="Hyrule")
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        resource = await _fetch(
+            client,
+            "channel:registry",
+            "https://registry.example.test/search",
+            restrict_redirects_to_origin=True,
+        )
+
+    assert resource["status"] == 200
+    assert resource["url"] == "https://registry.example.test/results"
+    assert resource["text"] == "Hyrule"
+
+
 def test_full_openapi_free_and_authenticated_routes_are_not_catalog_drift() -> None:
     evidence = {
         "surfaces": {
@@ -522,3 +591,31 @@ def test_html_listing_records_the_actual_result_url() -> None:
     observation = result["observations"][0]
     assert observation["present"] is True
     assert observation["resultUrl"] == "https://x402-list.com/services/hyrule-cloud"
+
+
+def test_html_listing_ignores_malformed_links() -> None:
+    evidence = {
+        "surfaces": _distribution_surfaces(),
+        "channels": {
+            "x402_list": _resource(
+                200,
+                '<a href="http://[broken">Broken</a><a href="/services/hyrule-cloud">Hyrule Cloud</a>',
+                url="https://x402-list.com/?q=Hyrule",
+            )
+        },
+        "channel_specs": [
+            {
+                "key": "x402_list",
+                "name": "x402-list",
+                "priority": "high",
+                "measurement": "presence",
+                "result_kind": "html",
+            }
+        ],
+        "markers": ["hyrule"],
+    }
+
+    result = audit_evidence(evidence, ["distribution"])
+
+    assert result["observations"][0]["present"] is True
+    assert result["observations"][0]["resultUrl"] == ("https://x402-list.com/services/hyrule-cloud")
