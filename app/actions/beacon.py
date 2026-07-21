@@ -56,8 +56,7 @@ def plan_actions(
     observed_absent = {
         str(observation["channelKey"])
         for observation in observations
-        if observation.get("present") is False
-        and isinstance(observation.get("channelKey"), str)
+        if observation.get("present") is False and isinstance(observation.get("channelKey"), str)
     }
 
     if "http" in scopes and any(code.startswith("http.") for code in codes):
@@ -239,5 +238,13 @@ async def execute_action(
             "status": "manual_required",
             "reason": "Automatic execution is disabled for this worker.",
         }
-    pinged = await indexnow.ping_if_changed(client, store, settings)
-    return {"status": "succeeded", "pinged": pinged}
+    outcome = await indexnow.ping_if_changed(client, store, settings)
+    if outcome.status == "manual_required":
+        return {"status": "manual_required", "reason": outcome.reason}
+    if outcome.status == "failed":
+        return {"status": "failed", "reason": outcome.reason}
+    return {
+        "status": "succeeded",
+        "indexnowStatus": outcome.status,
+        "pinged": outcome.pinged,
+    }

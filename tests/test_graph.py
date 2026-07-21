@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -20,9 +21,7 @@ class RecordingBeacon:
         self.events.extend(events)
 
 
-def _lease(
-    *, actions: list[RunAction] | None = None, events: list[ExistingEvent] | None = None
-) -> BeaconLease:
+def _lease(*, actions: list[RunAction] | None = None, events: list[ExistingEvent] | None = None) -> BeaconLease:
     return BeaconLease.model_validate(
         {
             "run": {
@@ -76,9 +75,7 @@ async def test_graph_checkpoints_at_approval_and_resumes_same_thread(tmp_path: P
     await store.connect()
     recorder = RecordingBeacon()
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
-        first = await run_graph(
-            lease=_lease(), beacon=recorder, settings=settings, store=store, http=http
-        )
+        first = await run_graph(lease=_lease(), beacon=recorder, settings=settings, store=store, http=http)
         assert first.awaiting_approval is True
         proposal_event = next(event for event in recorder.events if event.type == "action_proposed")
         assert recorder.events[-1].type == "awaiting_approval"
@@ -96,8 +93,7 @@ async def test_graph_checkpoints_at_approval_and_resumes_same_thread(tmp_path: P
             }
         )
         prior_events = [
-            ExistingEvent(id=event.id, sequence=event.sequence, type=event.type)
-            for event in recorder.events
+            ExistingEvent(id=event.id, sequence=event.sequence, type=event.type) for event in recorder.events
         ]
         resumed = await run_graph(
             lease=_lease(actions=[action], events=prior_events),
@@ -111,3 +107,10 @@ async def test_graph_checkpoints_at_approval_and_resumes_same_thread(tmp_path: P
     result = next(event for event in recorder.events if event.type == "action_result")
     assert result.data["status"] == "manual_required"
     assert resumed.state["summary"]["actions"] == 1
+    with sqlite3.connect(tmp_path / "beacon-checkpoints.sqlite") as checkpoint_db:
+        assert checkpoint_db.execute(
+            "SELECT count(*) FROM checkpoints WHERE thread_id = ?", ("thread-graph",)
+        ).fetchone() == (0,)
+        assert checkpoint_db.execute(
+            "SELECT count(*) FROM writes WHERE thread_id = ?", ("thread-graph",)
+        ).fetchone() == (0,)

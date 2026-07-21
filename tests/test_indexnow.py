@@ -36,7 +36,8 @@ def settings(tmp_path: Path) -> Settings:
 
 async def test_disabled_without_key(store: Store, tmp_path: Path) -> None:
     async with httpx.AsyncClient() as client:
-        assert not await indexnow.ping_if_changed(client, store, Settings(data_dir=str(tmp_path)))
+        result = await indexnow.ping_if_changed(client, store, Settings(data_dir=str(tmp_path)))
+    assert result.status == "manual_required"
 
 
 async def test_first_observation_seeds_without_ping(store: Store, settings: Settings) -> None:
@@ -44,7 +45,8 @@ async def test_first_observation_seeds_without_ping(store: Store, settings: Sett
         router.get("https://hyrule.host/sitemap.xml").respond(200, text=_SITEMAP_V1)
         ping = router.post("https://api.indexnow.org/indexnow")
         async with httpx.AsyncClient() as client:
-            assert not await indexnow.ping_if_changed(client, store, settings)
+            result = await indexnow.ping_if_changed(client, store, settings)
+    assert result.status == "seeded"
     assert not ping.called
     assert await store.get_kv("sitemap_sha256") is not None
 
@@ -58,7 +60,9 @@ async def test_change_triggers_ping_with_key_location(store: Store, settings: Se
         router.get("https://hyrule.host/sitemap.xml").respond(200, text=_SITEMAP_V2)
         ping = router.post("https://api.indexnow.org/indexnow").respond(200)
         async with httpx.AsyncClient() as client:
-            assert await indexnow.ping_if_changed(client, store, settings)
+            result = await indexnow.ping_if_changed(client, store, settings)
+    assert result.status == "submitted"
+    assert result.pinged is True
     payload = json.loads(ping.calls[0].request.content)
     assert payload["host"] == "hyrule.host"
     assert payload["key"] == "k" * 32
@@ -72,7 +76,8 @@ async def test_unchanged_sitemap_is_silent(store: Store, settings: Settings) -> 
         ping = router.post("https://api.indexnow.org/indexnow")
         async with httpx.AsyncClient() as client:
             await indexnow.ping_if_changed(client, store, settings)
-            assert not await indexnow.ping_if_changed(client, store, settings)
+            result = await indexnow.ping_if_changed(client, store, settings)
+    assert result.status == "unchanged"
     assert not ping.called
 
 
@@ -86,16 +91,26 @@ async def test_rejected_ping_keeps_old_hash_for_retry(store: Store, settings: Se
         router.get("https://hyrule.host/sitemap.xml").respond(200, text=_SITEMAP_V2)
         router.post("https://api.indexnow.org/indexnow").respond(429)
         async with httpx.AsyncClient() as client:
-            assert not await indexnow.ping_if_changed(client, store, settings)
+            result = await indexnow.ping_if_changed(client, store, settings)
+    assert result.status == "failed"
     # Hash not advanced → the change is retried next cycle.
     assert await store.get_kv("sitemap_sha256") == seeded
 
 
-async def test_sitemap_fetch_failure_is_silent(store: Store, settings: Settings) -> None:
+async def test_sitemap_fetch_failure_is_reported(store: Store, settings: Settings) -> None:
     with respx.mock() as router:
         router.get("https://hyrule.host/sitemap.xml").mock(side_effect=httpx.ConnectError("down"))
         async with httpx.AsyncClient() as client:
-            assert not await indexnow.ping_if_changed(client, store, settings)
+            result = await indexnow.ping_if_changed(client, store, settings)
+    assert result.status == "failed"
+
+
+async def test_invalid_sitemap_is_reported(store: Store, settings: Settings) -> None:
+    with respx.mock() as router:
+        router.get("https://hyrule.host/sitemap.xml").respond(200, text="not xml")
+        async with httpx.AsyncClient() as client:
+            result = await indexnow.ping_if_changed(client, store, settings)
+    assert result.status == "failed"
 
 
 def test_locs_tolerates_bad_xml() -> None:

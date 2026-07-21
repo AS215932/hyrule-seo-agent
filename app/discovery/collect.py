@@ -24,6 +24,7 @@ class ChannelSpec:
     url: str | None
     priority: Literal["existing", "high", "secondary", "manual", "not_applicable"]
     measurement: Literal["presence", "manual", "not_applicable"] = "presence"
+    result_kind: Literal["html", "json", "direct", "document"] = "html"
 
 
 def channel_specs(settings: Settings) -> tuple[ChannelSpec, ...]:
@@ -34,6 +35,7 @@ def channel_specs(settings: Settings) -> tuple[ChannelSpec, ...]:
             "CDP Bazaar",
             "https://api.cdp.coinbase.com/platform/v2/x402/discovery/resources",
             "existing",
+            result_kind="json",
         ),
         ChannelSpec(
             "agentic_market",
@@ -54,12 +56,14 @@ def channel_specs(settings: Settings) -> tuple[ChannelSpec, ...]:
             "skills.sh",
             "https://skills.sh/AS215932/hyrule-cloud",
             "high",
+            result_kind="direct",
         ),
         ChannelSpec(
             "mcp_registry",
             "Official MCP Registry",
             "https://registry.modelcontextprotocol.io/v0.1/servers?search=hyrule",
             "high",
+            result_kind="json",
         ),
         ChannelSpec(
             "agent402",
@@ -73,12 +77,14 @@ def channel_specs(settings: Settings) -> tuple[ChannelSpec, ...]:
             "xpaysh/awesome-x402",
             "https://raw.githubusercontent.com/xpaysh/awesome-x402/main/README.md",
             "secondary",
+            result_kind="document",
         ),
         ChannelSpec(
             "awesome_x402_merit",
             "Merit-Systems/awesome-x402",
             "https://raw.githubusercontent.com/Merit-Systems/awesome-x402/main/README.md",
             "secondary",
+            result_kind="document",
         ),
         ChannelSpec(
             "x402_foundation",
@@ -87,12 +93,8 @@ def channel_specs(settings: Settings) -> tuple[ChannelSpec, ...]:
             "manual",
             "manual",
         ),
-        ChannelSpec(
-            "ampersend", "Ampersend", None, "manual", "manual"
-        ),
-        ChannelSpec(
-            "paysh", "Pay.sh", None, "not_applicable", "not_applicable"
-        ),
+        ChannelSpec("ampersend", "Ampersend", None, "manual", "manual"),
+        ChannelSpec("paysh", "Pay.sh", None, "not_applicable", "not_applicable"),
     )
 
 
@@ -120,12 +122,10 @@ def _surface_urls(settings: Settings, scopes: set[str]) -> dict[str, str]:
         urls.update(
             {
                 "skills:umbrella": (
-                    "https://raw.githubusercontent.com/AS215932/hyrule-cloud/"
-                    "main/skills/hyrule-cloud/SKILL.md"
+                    "https://raw.githubusercontent.com/AS215932/hyrule-cloud/main/skills/hyrule-cloud/SKILL.md"
                 ),
                 "mcp:descriptor": (
-                    "https://raw.githubusercontent.com/AS215932/hyrule-cloud/"
-                    "main/packages/hyrule-cloud-mcp/server.json"
+                    "https://raw.githubusercontent.com/AS215932/hyrule-cloud/main/packages/hyrule-cloud-mcp/server.json"
                 ),
             }
         )
@@ -166,9 +166,7 @@ async def _fetch(client: httpx.AsyncClient, key: str, url: str) -> dict[str, Any
         }
 
 
-async def collect_evidence(
-    client: httpx.AsyncClient, settings: Settings, scopes: list[str]
-) -> dict[str, Any]:
+async def collect_evidence(client: httpx.AsyncClient, settings: Settings, scopes: list[str]) -> dict[str, Any]:
     """Collect all requested evidence concurrently under the client's timeout."""
 
     scope_set = set(scopes)
@@ -176,15 +174,10 @@ async def collect_evidence(
     channel_list = channel_specs(settings) if "distribution" in scope_set else ()
     surface_tasks = [_fetch(client, key, url) for key, url in surfaces.items()]
     fetchable_channels = [spec for spec in channel_list if spec.url]
-    channel_tasks = [
-        _fetch(client, f"channel:{spec.key}", spec.url or "") for spec in fetchable_channels
-    ]
+    channel_tasks = [_fetch(client, f"channel:{spec.key}", spec.url or "") for spec in fetchable_channels]
     results = await asyncio.gather(*surface_tasks, *channel_tasks)
     surface_count = len(surface_tasks)
-    channel_results = {
-        result["key"].removeprefix("channel:"): result
-        for result in results[surface_count:]
-    }
+    channel_results = {result["key"].removeprefix("channel:"): result for result in results[surface_count:]}
     return {
         "surfaces": {result["key"]: result for result in results[:surface_count]},
         "channels": channel_results,

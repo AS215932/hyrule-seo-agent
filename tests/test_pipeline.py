@@ -130,9 +130,10 @@ async def test_run_metrics_collects_and_derives_findings(deps, monkeypatch, tmp_
 
 async def test_run_indexnow_delegates(deps, monkeypatch) -> None:
     async def fake_ping(client, store, settings):
-        return True
+        return indexnow.IndexNowResult("submitted")
 
     monkeypatch.setattr(indexnow, "ping_if_changed", fake_ping)
     outcome = await pipeline.run_indexnow(deps)
     assert outcome.ok
     assert outcome.stats["pinged"] is True
+    assert outcome.stats["status"] == "submitted"

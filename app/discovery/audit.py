@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import json
 from datetime import UTC, datetime
+from html.parser import HTMLParser
 from typing import Any
+from urllib.parse import unquote, urljoin, urlsplit
 
 
 def _finding(
@@ -78,6 +80,14 @@ def _audit_http(surfaces: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
     return findings
 
 
+def _normalized_path(value: str) -> str:
+    parsed = urlsplit(value)
+    path = parsed.path or "/"
+    if not path.startswith("/"):
+        path = f"/{path}"
+    return path.rstrip("/") or "/"
+
+
 def _manifest_operations(manifest: dict[str, Any]) -> set[tuple[str, str]]:
     candidates = manifest.get("resources") or manifest.get("endpoints") or []
     operations: set[tuple[str, str]] = set()
@@ -88,14 +98,17 @@ def _manifest_operations(manifest: dict[str, Any]) -> set[tuple[str, str]]:
             method = item.get("method")
             path = item.get("path") or item.get("resource") or item.get("url")
             if isinstance(method, str) and isinstance(path, str):
-                operations.add((method.upper(), path))
+                operations.add((method.upper(), _normalized_path(path)))
     return operations
 
 
 def _paid_openapi_operations(openapi: dict[str, Any]) -> set[tuple[str, str]]:
     methods = {"get", "post", "put", "delete", "patch", "head", "options", "trace"}
     operations: set[tuple[str, str]] = set()
-    for path, path_item in openapi.get("paths", {}).items():
+    paths = openapi.get("paths")
+    if not isinstance(paths, dict):
+        return operations
+    for path, path_item in paths.items():
         if not isinstance(path, str) or not isinstance(path_item, dict):
             continue
         for method, operation in path_item.items():
@@ -104,7 +117,7 @@ def _paid_openapi_operations(openapi: dict[str, Any]) -> set[tuple[str, str]]:
                 and isinstance(operation, dict)
                 and isinstance(operation.get("x-payment-info"), dict)
             ):
-                operations.add((method.upper(), path))
+                operations.add((method.upper(), _normalized_path(path)))
     return operations
 
 
@@ -112,7 +125,7 @@ def _audit_x402(surfaces: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
     findings: list[dict[str, Any]] = []
     openapi = _json(surfaces.get("x402:openapi"))
     manifest = _json(surfaces.get("x402:manifest"))
-    if openapi is None:
+    if openapi is None or not isinstance(openapi.get("paths"), dict):
         findings.append(
             _finding(
                 "x402.openapi.invalid",
@@ -121,6 +134,7 @@ def _audit_x402(surfaces: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
                 severity="error",
             )
         )
+        openapi = None
     if manifest is None:
         findings.append(
             _finding(
@@ -161,7 +175,7 @@ def _audit_x402(surfaces: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
         )
 
     weak_descriptions = 0
-    for path_item in openapi.get("paths", {}).values():
+    for path_item in openapi["paths"].values():
         if not isinstance(path_item, dict):
             continue
         for operation in path_item.values():
@@ -182,6 +196,116 @@ def _audit_x402(surfaces: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
     return findings
 
 
+def _contains_marker(value: Any, markers: tuple[str, ...]) -> bool:
+    if isinstance(value, str):
+        lowered = value.lower()
+        return any(marker in lowered for marker in markers)
+    if isinstance(value, dict):
+        return any(_contains_marker(item, markers) for item in value.values())
+    if isinstance(value, list):
+        return any(_contains_marker(item, markers) for item in value)
+    return False
+
+
+def _record_url(value: Any) -> str | None:
+    if isinstance(value, dict):
+        for key in ("url", "homepage", "website", "endpoint", "repository", "href"):
+            candidate = value.get(key)
+            if isinstance(candidate, str) and candidate.startswith(("https://", "http://")):
+                return candidate
+        for candidate in value.values():
+            found = _record_url(candidate)
+            if found:
+                return found
+    elif isinstance(value, list):
+        for candidate in value:
+            found = _record_url(candidate)
+            if found:
+                return found
+    return None
+
+
+def _json_listing(text: str, markers: tuple[str, ...]) -> tuple[bool, str | None]:
+    try:
+        payload = json.loads(text)
+    except json.JSONDecodeError, TypeError:
+        return False, None
+
+    def records(value: Any) -> list[dict[str, Any]]:
+        found: list[dict[str, Any]] = []
+        if isinstance(value, list):
+            for item in value:
+                if isinstance(item, dict):
+                    found.append(item)
+                else:
+                    found.extend(records(item))
+        elif isinstance(value, dict):
+            for item in value.values():
+                found.extend(records(item))
+        return found
+
+    for record in records(payload):
+        if _contains_marker(record, markers):
+            return True, _record_url(record)
+    return False, None
+
+
+class _AnchorParser(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__()
+        self.anchors: list[tuple[str, str]] = []
+        self._href: str | None = None
+        self._text: list[str] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag.lower() != "a":
+            return
+        self._href = next((value for key, value in attrs if key == "href" and value), "")
+        self._text = []
+
+    def handle_data(self, data: str) -> None:
+        if self._href is not None:
+            self._text.append(data)
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag.lower() == "a" and self._href is not None:
+            self.anchors.append((self._href, " ".join(self._text)))
+            self._href = None
+            self._text = []
+
+
+def _html_listing(text: str, base_url: str, markers: tuple[str, ...]) -> tuple[bool, str | None]:
+    parser = _AnchorParser()
+    parser.feed(text)
+    for href, label in parser.anchors:
+        resolved = urljoin(base_url, href)
+        parsed = urlsplit(resolved)
+        # Search forms commonly echo the query in `?q=...`; only visible link
+        # text or the destination itself is evidence of an actual result.
+        destination = unquote(f"{parsed.netloc}{parsed.path}{parsed.fragment}").lower()
+        if _contains_marker(label, markers) or any(marker in destination for marker in markers):
+            return True, resolved
+    return False, None
+
+
+def _listing_result(
+    resource: dict[str, Any], spec: dict[str, Any], markers: tuple[str, ...]
+) -> tuple[bool, str | None]:
+    text = str(resource.get("text", ""))
+    url = str(resource.get("url", ""))
+    result_kind = spec.get("result_kind", "html")
+    if result_kind == "json":
+        present, result_url = _json_listing(text, markers)
+        return present, result_url or (url if present else None)
+    if result_kind == "direct":
+        present = _contains_marker(text, markers)
+        return present, url if present else None
+    if result_kind == "document":
+        present = any(_contains_marker(line, markers) for line in text.splitlines())
+        return present, url if present else None
+    return _html_listing(text, url, markers)
+
+
 def _audit_distribution(evidence: dict[str, Any]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     findings: list[dict[str, Any]] = []
     observations: list[dict[str, Any]] = []
@@ -194,8 +318,6 @@ def _audit_distribution(evidence: dict[str, Any]) -> tuple[list[dict[str, Any]],
         if measurement in {"manual", "not_applicable"}:
             continue
         resource = channel_results.get(key, {})
-        body = str(resource.get("text", "")).lower()
-        present = resource.get("status") == 200 and any(marker in body for marker in markers)
         if resource.get("status") == 0 or resource.get("status", 500) >= 400:
             findings.append(
                 _finding(
@@ -208,6 +330,7 @@ def _audit_distribution(evidence: dict[str, Any]) -> tuple[list[dict[str, Any]],
                 )
             )
             continue
+        present, result_url = _listing_result(resource, spec, markers)
         observations.append(
             {
                 "channelKey": key,
@@ -217,7 +340,7 @@ def _audit_distribution(evidence: dict[str, Any]) -> tuple[list[dict[str, Any]],
                 "position": None,
                 "score": None,
                 "resultName": "Hyrule Cloud" if present else None,
-                "resultUrl": resource.get("url") if present else None,
+                "resultUrl": result_url,
                 "evidenceR2Key": None,
                 "observedAt": resource.get("observed_at", observed_at),
             }

@@ -95,9 +95,7 @@ async def run_audit(deps: Deps) -> PhaseOutcome:
         )
         findings = audit_crawl(crawl, site_base_url=settings.site_base_url)
         new, seen = await deps.store.upsert_findings(findings)
-        resolved = await deps.store.resolve_stale(
-            "audit", {finding.fingerprint for finding in findings}
-        )
+        resolved = await deps.store.resolve_stale("audit", {finding.fingerprint for finding in findings})
         stats = {
             "pages": len(crawl.pages),
             "findings": len(findings),
@@ -145,12 +143,8 @@ async def run_metrics(deps: Deps) -> PhaseOutcome:
             if gsc_samples:
                 sources.append("gsc")
             previous = {
-                ("gsc", "clicks", "28d_prev"): await deps.store.latest_metric(
-                    "gsc", "clicks", "28d_prev"
-                ),
-                ("gsc", "impressions", "28d_prev"): await deps.store.latest_metric(
-                    "gsc", "impressions", "28d_prev"
-                ),
+                ("gsc", "clicks", "28d_prev"): await deps.store.latest_metric("gsc", "clicks", "28d_prev"),
+                ("gsc", "impressions", "28d_prev"): await deps.store.latest_metric("gsc", "impressions", "28d_prev"),
             }
             findings.extend(
                 findings_from_metrics(
@@ -189,11 +183,7 @@ async def run_metrics(deps: Deps) -> PhaseOutcome:
             if source in sources:
                 await deps.store.resolve_stale(
                     source,
-                    {
-                        finding.fingerprint
-                        for finding in findings
-                        if finding.source == source
-                    },
+                    {finding.fingerprint for finding in findings if finding.source == source},
                 )
         stats = {
             "samples": stored,
@@ -222,14 +212,14 @@ async def run_metrics(deps: Deps) -> PhaseOutcome:
 
 async def run_indexnow(deps: Deps) -> PhaseOutcome:
     started = _now()
-    pinged = await indexnow.ping_if_changed(deps.client, deps.store, deps.settings)
+    result = await indexnow.ping_if_changed(deps.client, deps.store, deps.settings)
     return await _finish(
         deps,
         "indexnow",
         started=started,
-        ok=True,
-        summary="pinged" if pinged else "no change",
-        stats={"pinged": pinged},
+        ok=result.status != "failed",
+        summary=result.reason or result.status,
+        stats={"pinged": result.pinged, "status": result.status},
     )
 
 

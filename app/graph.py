@@ -69,9 +69,7 @@ def initial_state(lease: BeaconLease) -> BeaconState:
 
 def _build_graph(checkpointer: AsyncSqliteSaver, deps: GraphDeps):
     async def collect(state: BeaconState) -> dict[str, Any]:
-        await deps.emitter.emit(
-            "node_started", "Collecting owned surfaces and public channels.", node="collect"
-        )
+        await deps.emitter.emit("node_started", "Collecting owned surfaces and public channels.", node="collect")
         evidence = await collect_evidence(deps.http, deps.settings, state["scopes"])
         await deps.emitter.emit(
             "node_completed",
@@ -85,9 +83,7 @@ def _build_graph(checkpointer: AsyncSqliteSaver, deps: GraphDeps):
         return {"evidence": evidence}
 
     async def audit(state: BeaconState) -> dict[str, Any]:
-        await deps.emitter.emit(
-            "node_started", "Running deterministic visibility audits.", node="audit"
-        )
+        await deps.emitter.emit("node_started", "Running deterministic visibility audits.", node="audit")
         result = audit_evidence(state["evidence"], state["scopes"])
         observations = result["observations"]
         findings = result["findings"]
@@ -99,9 +95,7 @@ def _build_graph(checkpointer: AsyncSqliteSaver, deps: GraphDeps):
                 data=observation,
             )
         for finding in findings:
-            await deps.emitter.emit(
-                "finding", finding["title"], node="audit", data=finding
-            )
+            await deps.emitter.emit("finding", finding["title"], node="audit", data=finding)
         await deps.emitter.emit(
             "node_completed",
             f"Audit produced {len(findings)} findings and {len(observations)} observations.",
@@ -110,13 +104,9 @@ def _build_graph(checkpointer: AsyncSqliteSaver, deps: GraphDeps):
         return {"findings": findings, "observations": observations}
 
     async def analyze(state: BeaconState) -> dict[str, Any]:
-        await deps.emitter.emit(
-            "node_started", "Prioritizing evidence-backed improvements.", node="analyze"
-        )
+        await deps.emitter.emit("node_started", "Prioritizing evidence-backed improvements.", node="analyze")
         severity_counts = {
-            severity: sum(
-                1 for finding in state["findings"] if finding.get("severity") == severity
-            )
+            severity: sum(1 for finding in state["findings"] if finding.get("severity") == severity)
             for severity in ("error", "warning", "info")
         }
         missing_channels = sorted(
@@ -129,9 +119,7 @@ def _build_graph(checkpointer: AsyncSqliteSaver, deps: GraphDeps):
             "missingChannels": missing_channels,
             "basis": "deterministic_live_evidence",
         }
-        model_analysis = await analyze_with_model(
-            deps.settings, state["findings"], state["observations"]
-        )
+        model_analysis = await analyze_with_model(deps.settings, state["findings"], state["observations"])
         if model_analysis is not None:
             analysis["modelAnalysis"] = model_analysis
         await deps.emitter.emit(
@@ -143,9 +131,7 @@ def _build_graph(checkpointer: AsyncSqliteSaver, deps: GraphDeps):
         return {"analysis": analysis}
 
     async def plan(state: BeaconState) -> dict[str, Any]:
-        await deps.emitter.emit(
-            "node_started", "Building policy-scoped action proposals.", node="plan"
-        )
+        await deps.emitter.emit("node_started", "Building policy-scoped action proposals.", node="plan")
         actions = plan_actions(
             run_id=state["run_id"],
             mode=state["mode"],
@@ -174,11 +160,7 @@ def _build_graph(checkpointer: AsyncSqliteSaver, deps: GraphDeps):
         return "execute"
 
     def approval(state: BeaconState) -> dict[str, Any]:
-        keys = [
-            action["idempotencyKey"]
-            for action in state["actions"]
-            if action["risk"] == "approval_required"
-        ]
+        keys = [action["idempotencyKey"] for action in state["actions"] if action["risk"] == "approval_required"]
         decisions = interrupt(
             {
                 "runId": state["run_id"],
@@ -189,15 +171,9 @@ def _build_graph(checkpointer: AsyncSqliteSaver, deps: GraphDeps):
         return {"decisions": cast(dict[str, Any], decisions)}
 
     async def execute(state: BeaconState) -> dict[str, Any]:
-        await deps.emitter.emit(
-            "node_started", "Applying the capability and approval boundary.", node="execute"
-        )
+        await deps.emitter.emit("node_started", "Applying the capability and approval boundary.", node="execute")
         decision_rows = state.get("decisions", {}).get("actions", [])
-        statuses = {
-            row.get("idempotencyKey"): row.get("status")
-            for row in decision_rows
-            if isinstance(row, dict)
-        }
+        statuses = {row.get("idempotencyKey"): row.get("status") for row in decision_rows if isinstance(row, dict)}
         executions: list[dict[str, Any]] = []
         for action in state["actions"]:
             status = statuses.get(action["idempotencyKey"])
@@ -225,11 +201,7 @@ def _build_graph(checkpointer: AsyncSqliteSaver, deps: GraphDeps):
                 data={
                     "idempotencyKey": action["idempotencyKey"],
                     "status": result["status"],
-                    "result": {
-                        key: value
-                        for key, value in result.items()
-                        if key not in {"status", "reason"}
-                    },
+                    "result": {key: value for key, value in result.items() if key not in {"status", "reason"}},
                     "errorMessage": result.get("reason"),
                 },
             )
@@ -247,12 +219,8 @@ def _build_graph(checkpointer: AsyncSqliteSaver, deps: GraphDeps):
             "actions": len(state["actions"]),
             "executions": len(state["executions"]),
         }
-        await deps.emitter.emit(
-            "node_started", "Finalizing the Beacon run.", node="report"
-        )
-        await deps.emitter.emit(
-            "node_completed", "Beacon run is complete.", node="report", data=summary
-        )
+        await deps.emitter.emit("node_started", "Finalizing the Beacon run.", node="report")
+        await deps.emitter.emit("node_completed", "Beacon run is complete.", node="report", data=summary)
         return {"summary": summary}
 
     builder = StateGraph(BeaconState)
@@ -267,9 +235,7 @@ def _build_graph(checkpointer: AsyncSqliteSaver, deps: GraphDeps):
     builder.add_edge("collect", "audit")
     builder.add_edge("audit", "analyze")
     builder.add_edge("analyze", "plan")
-    builder.add_conditional_edges(
-        "plan", route_after_plan, {"approval": "approval", "execute": "execute"}
-    )
+    builder.add_conditional_edges("plan", route_after_plan, {"approval": "approval", "execute": "execute"})
     builder.add_edge("approval", "execute")
     builder.add_edge("execute", "report")
     builder.add_edge("report", END)
@@ -296,31 +262,37 @@ async def run_graph(
         graph = _build_graph(checkpointer, deps)
         snapshot = await graph.aget_state(config)
         if snapshot.next:
-            proposed = [
-                action
-                for action in lease.run.actions
-                if action.risk == "approval_required" and action.status == "proposed"
-            ]
-            if proposed:
-                await emitter.emit(
-                    "awaiting_approval",
-                    f"Waiting for {len(proposed)} remaining operator decisions.",
-                    node="approval",
-                )
-                return GraphOutcome(state=dict(snapshot.values), awaiting_approval=True)
-            decisions = {
-                "actions": [
-                    action.model_dump(by_alias=True, mode="json")
+            interrupted = any(task.interrupts for task in snapshot.tasks)
+            if interrupted:
+                proposed = [
+                    action
                     for action in lease.run.actions
+                    if action.risk == "approval_required" and action.status == "proposed"
                 ]
-            }
-            result = await graph.ainvoke(Command(resume=decisions), config)
+                if proposed:
+                    await emitter.emit(
+                        "awaiting_approval",
+                        f"Waiting for {len(proposed)} remaining operator decisions.",
+                        node="approval",
+                    )
+                    return GraphOutcome(state=dict(snapshot.values), awaiting_approval=True)
+                decisions = {"actions": [action.model_dump(by_alias=True, mode="json") for action in lease.run.actions]}
+                result = await graph.ainvoke(Command(resume=decisions), config)
+            else:
+                # A durable checkpoint can also be pending because the worker
+                # stopped between nodes. Continue it without fabricating an
+                # approval-resume payload.
+                result = await graph.ainvoke(None, config)
         elif snapshot.values:
-            return GraphOutcome(state=dict(snapshot.values), awaiting_approval=False)
+            state = dict(snapshot.values)
+            await checkpointer.adelete_thread(lease.run.thread_id)
+            return GraphOutcome(state=state, awaiting_approval=False)
         else:
             result = await graph.ainvoke(initial_state(lease), config)
-    state = dict(result)
-    awaiting_approval = bool(state.get("__interrupt__"))
+        state = dict(result)
+        awaiting_approval = bool(state.get("__interrupt__"))
+        if not awaiting_approval:
+            await checkpointer.adelete_thread(lease.run.thread_id)
     if awaiting_approval:
         await emitter.emit(
             "awaiting_approval",

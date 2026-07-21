@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 from app.discovery.audit import audit_evidence
 
 
@@ -41,6 +43,7 @@ def test_public_listing_presence_is_measured_without_inventing_rank() -> None:
                 "name": "skills.sh",
                 "priority": "high",
                 "measurement": "presence",
+                "result_kind": "direct",
             }
         ],
         "markers": ["as215932/hyrule-cloud"],
@@ -95,3 +98,95 @@ def test_full_openapi_free_and_authenticated_routes_are_not_catalog_drift() -> N
     result = audit_evidence(evidence, ["x402"])
 
     assert {finding["code"] for finding in result["findings"]} == set()
+
+
+def test_malformed_openapi_paths_is_reported_instead_of_crashing() -> None:
+    for paths in (None, []):
+        evidence = {
+            "surfaces": {
+                "x402:openapi": _resource(200, f'{{"paths":{json.dumps(paths)}}}'),
+                "x402:manifest": _resource(200, '{"x402Version":2,"resources":[]}'),
+            }
+        }
+
+        result = audit_evidence(evidence, ["x402"])
+
+        assert result["findings"][0]["code"] == "x402.openapi.invalid"
+
+
+def test_manifest_absolute_urls_compare_as_normalized_paths() -> None:
+    evidence = {
+        "surfaces": {
+            "x402:openapi": _resource(
+                200,
+                '{"paths":{"/v1/dns/lookup/":{"post":{'
+                '"description":"Resolve public DNS records using a paid Hyrule endpoint.",'
+                '"x-payment-info":{}}}}}',
+            ),
+            "x402:manifest": _resource(
+                200,
+                '{"x402Version":2,"resources":[{"method":"POST",'
+                '"url":"https://cloud.hyrule.host/v1/dns/lookup?source=manifest"}]}',
+            ),
+        }
+    }
+
+    result = audit_evidence(evidence, ["x402"])
+
+    assert "x402.catalog.drift" not in {finding["code"] for finding in result["findings"]}
+
+
+def test_search_query_echo_is_not_listing_evidence() -> None:
+    evidence = {
+        "surfaces": {},
+        "channels": {
+            "x402_list": _resource(
+                200,
+                '<form><a href="/?q=Hyrule">Search again</a></form>',
+                url="https://x402-list.com/?q=Hyrule",
+            )
+        },
+        "channel_specs": [
+            {
+                "key": "x402_list",
+                "name": "x402-list",
+                "priority": "high",
+                "measurement": "presence",
+                "result_kind": "html",
+            }
+        ],
+        "markers": ["hyrule"],
+    }
+
+    result = audit_evidence(evidence, ["distribution"])
+
+    assert result["observations"][0]["present"] is False
+
+
+def test_html_listing_records_the_actual_result_url() -> None:
+    evidence = {
+        "surfaces": {},
+        "channels": {
+            "x402_list": _resource(
+                200,
+                '<a href="/services/hyrule-cloud">Hyrule Cloud</a>',
+                url="https://x402-list.com/?q=Hyrule",
+            )
+        },
+        "channel_specs": [
+            {
+                "key": "x402_list",
+                "name": "x402-list",
+                "priority": "high",
+                "measurement": "presence",
+                "result_kind": "html",
+            }
+        ],
+        "markers": ["hyrule"],
+    }
+
+    result = audit_evidence(evidence, ["distribution"])
+
+    observation = result["observations"][0]
+    assert observation["present"] is True
+    assert observation["resultUrl"] == "https://x402-list.com/services/hyrule-cloud"

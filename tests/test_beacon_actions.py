@@ -30,9 +30,7 @@ def test_optimize_policy_separates_automatic_approval_and_manual_work() -> None:
             {"channelKey": "x402_list", "present": False},
             {"channelKey": "a2alist", "present": False},
         ],
-        evidence={
-            "surfaces": {"http:sitemap": {"status": 200, "sha256": "abc"}}
-        },
+        evidence={"surfaces": {"http:sitemap": {"status": 200, "sha256": "abc"}}},
     )
     risks = {(action["actionType"], action["risk"]) for action in actions}
     assert ("indexnow.submit", "automatic") in risks
@@ -69,7 +67,7 @@ async def test_executor_never_treats_approval_as_new_capability(tmp_path, monkey
         assert disabled["status"] == "manual_required"
 
         async def fake_ping(client, store, settings):
-            return True
+            return indexnow.IndexNowResult("submitted")
 
         monkeypatch.setattr(indexnow, "ping_if_changed", fake_ping)
         enabled = await execute_action(
@@ -79,5 +77,25 @@ async def test_executor_never_treats_approval_as_new_capability(tmp_path, monkey
             store=store,
             approved=True,
         )
-        assert enabled == {"status": "succeeded", "pinged": True}
+        assert enabled == {
+            "status": "succeeded",
+            "indexnowStatus": "submitted",
+            "pinged": True,
+        }
+
+        async def fake_failure(client, store, settings):
+            return indexnow.IndexNowResult("failed", "IndexNow rejected the request.")
+
+        monkeypatch.setattr(indexnow, "ping_if_changed", fake_failure)
+        failed = await execute_action(
+            automatic,
+            settings=Settings(beacon_execute_automatic_actions=True),
+            client=client,
+            store=store,
+            approved=True,
+        )
+        assert failed == {
+            "status": "failed",
+            "reason": "IndexNow rejected the request.",
+        }
     await store.close()
