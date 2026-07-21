@@ -6,7 +6,7 @@ from typing import Any
 
 import httpx
 
-from app.beacon.models import BeaconLease, WorkerEvent
+from app.beacon.models import BeaconLease, EvidenceUpload, WorkerEvent
 
 
 class BeaconProtocolError(RuntimeError):
@@ -34,19 +34,35 @@ class BeaconClient:
         self._raise(response)
         return BeaconLease.model_validate(response.json())
 
-    async def post_events(
-        self, run_id: str, lease_token: str, events: list[WorkerEvent]
-    ) -> None:
+    async def post_events(self, run_id: str, lease_token: str, events: list[WorkerEvent]) -> None:
         if not events:
             return
         response = await self._client.post(
             f"{self._base_url}/api/v1/beacon/worker/runs/{run_id}/events",
             headers={**self._headers, "x-beacon-lease-token": lease_token},
-            json={
-                "events": [event.model_dump(by_alias=True, mode="json") for event in events]
-            },
+            json={"events": [event.model_dump(by_alias=True, mode="json") for event in events]},
         )
         self._raise(response)
+
+    async def upload_evidence(
+        self,
+        run_id: str,
+        lease_token: str,
+        body: bytes,
+        *,
+        content_type: str,
+    ) -> EvidenceUpload:
+        response = await self._client.post(
+            f"{self._base_url}/api/v1/beacon/worker/runs/{run_id}/evidence",
+            headers={
+                **self._headers,
+                "x-beacon-lease-token": lease_token,
+                "content-type": content_type,
+            },
+            content=body,
+        )
+        self._raise(response)
+        return EvidenceUpload.model_validate(response.json())
 
     async def complete(
         self,
@@ -66,9 +82,7 @@ class BeaconClient:
         return payload if isinstance(payload, dict) else {}
 
     async def heartbeat(self) -> None:
-        response = await self._client.post(
-            f"{self._base_url}/api/v1/beacon/worker/heartbeat", headers=self._headers
-        )
+        response = await self._client.post(f"{self._base_url}/api/v1/beacon/worker/heartbeat", headers=self._headers)
         self._raise(response)
 
     async def renew_lease(self, run_id: str, lease_token: str) -> None:
@@ -84,6 +98,4 @@ class BeaconClient:
             response.raise_for_status()
         except httpx.HTTPStatusError as exc:
             detail = response.text[:1_000]
-            raise BeaconProtocolError(
-                f"Beacon returned {response.status_code}: {detail}"
-            ) from exc
+            raise BeaconProtocolError(f"Beacon returned {response.status_code}: {detail}") from exc

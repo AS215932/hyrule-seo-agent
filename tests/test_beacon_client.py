@@ -29,9 +29,15 @@ async def test_client_leases_and_posts_ordered_events() -> None:
             },
         )
     )
-    event_route = respx.post(
-        "https://beacon.example/api/v1/beacon/worker/runs/run-1/events"
-    ).mock(return_value=httpx.Response(202, json={"accepted": 1}))
+    event_route = respx.post("https://beacon.example/api/v1/beacon/worker/runs/run-1/events").mock(
+        return_value=httpx.Response(202, json={"accepted": 1})
+    )
+    evidence_route = respx.post("https://beacon.example/api/v1/beacon/worker/runs/run-1/evidence").mock(
+        return_value=httpx.Response(
+            201,
+            json={"key": "beacon/evidence/key", "sha256": "abc", "sizeBytes": 2},
+        )
+    )
     async with httpx.AsyncClient() as http:
         client = BeaconClient(http, base_url="https://beacon.example/", token="worker-secret")
         lease = await client.lease()
@@ -48,9 +54,18 @@ async def test_client_leases_and_posts_ordered_events() -> None:
                 )
             ],
         )
+        evidence = await client.upload_evidence(
+            lease.run.id,
+            lease.lease_token,
+            b"{}",
+            content_type="application/json",
+        )
     assert lease_route.calls[0].request.headers["authorization"] == "Bearer worker-secret"
     assert event_route.calls[0].request.headers["x-beacon-lease-token"] == "lease-secret"
     assert b'"sequence":0' in event_route.calls[0].request.content
+    assert evidence.key == "beacon/evidence/key"
+    assert evidence_route.calls[0].request.headers["content-type"] == "application/json"
+    assert evidence_route.calls[0].request.content == b"{}"
 
 
 @respx.mock

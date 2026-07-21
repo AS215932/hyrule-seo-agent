@@ -15,9 +15,7 @@ from pydantic import BaseModel, ConfigDict, Field
 BeaconScope = Literal["http", "x402", "distribution"]
 BeaconMode = Literal["measure", "optimize"]
 ActionRisk = Literal["automatic", "approval_required", "manual"]
-ActionStatus = Literal[
-    "proposed", "approved", "rejected", "executing", "succeeded", "failed", "manual_required"
-]
+ActionStatus = Literal["proposed", "approved", "rejected", "executing", "succeeded", "failed", "manual_required"]
 EventType = Literal[
     "node_started",
     "node_completed",
@@ -72,6 +70,12 @@ class BeaconLease(WireModel):
     run: BeaconRun
     lease_token: str = Field(alias="leaseToken")
     lease_expires_at: datetime = Field(alias="leaseExpiresAt")
+
+
+class EvidenceUpload(WireModel):
+    key: str
+    sha256: str
+    size_bytes: int = Field(alias="sizeBytes")
 
 
 class WorkerEvent(WireModel):
