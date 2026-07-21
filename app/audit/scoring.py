@@ -1,7 +1,7 @@
 """Metric-delta findings plus ranking/selection of the actionable slice.
 
-Deterministic like ``checks``: the drafter and weekly report only ever see
-``top_findings`` output, so ordering here decides what the agent works on.
+Deterministic like ``checks``: reports and operator triage use
+``top_findings`` output, so ordering here decides what is shown first.
 """
 
 from __future__ import annotations
@@ -91,6 +91,6 @@ def rank_findings(
 
 
 def top_findings(findings: Sequence[Finding], *, limit: int = 8) -> list[Finding]:
-    """The slice the drafter/report acts on: info excluded, ranked, capped."""
+    """The report/triage slice: info excluded, ranked, and capped."""
     actionable = [finding for finding in findings if finding.severity != "info"]
     return rank_findings(actionable)[:limit]

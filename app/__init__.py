@@ -1,1 +1,1 @@
-"""AS215932 autonomous SEO agent."""
+"""Overlay-bound execution worker for Hyrule Beacon."""

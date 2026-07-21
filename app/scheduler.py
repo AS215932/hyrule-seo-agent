@@ -12,7 +12,7 @@ from collections.abc import Awaitable, Callable
 
 import structlog
 
-from app.pipeline import Deps, PhaseOutcome, run_audit, run_draft, run_indexnow, run_metrics, run_report
+from app.pipeline import Deps, PhaseOutcome, run_audit, run_indexnow, run_metrics, run_report
 
 log = structlog.get_logger()
 
@@ -32,7 +32,6 @@ class Scheduler:
             ("audit", run_audit, s.audit_interval_s, min(15, s.audit_interval_s)),
             ("metrics", run_metrics, s.metrics_interval_s, min(60, s.metrics_interval_s)),
             ("indexnow", run_indexnow, s.indexnow_interval_s, min(120, s.indexnow_interval_s)),
-            ("draft", run_draft, s.draft_interval_s, min(300, s.draft_interval_s)),
             ("report", run_report, s.report_interval_s, min(600, s.report_interval_s)),
         ]
 

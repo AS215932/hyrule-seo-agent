@@ -1,4 +1,4 @@
-"""FastAPI app: /health + /metrics, lifespan-managed store/client/scheduler."""
+"""FastAPI app: health, metrics, and the lifespan-managed Beacon worker."""
 
 from __future__ import annotations
 
@@ -15,13 +15,12 @@ from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 
 from app.config import settings
 from app.metrics_registry import ACTIVE_FINDINGS
+from app.managed import ManagedWorker
 from app.pipeline import Deps
 from app.scheduler import Scheduler
 from app.store import Store
 
-structlog.configure(
-    processors=[structlog.processors.TimeStamper(fmt="iso"), structlog.processors.JSONRenderer()]
-)
+structlog.configure(processors=[structlog.processors.TimeStamper(fmt="iso"), structlog.processors.JSONRenderer()])
 log = structlog.get_logger()
 
 
@@ -29,41 +28,60 @@ log = structlog.get_logger()
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     store = Store(Path(settings.data_dir) / "seo.db")
     await store.connect()
-    client = httpx.AsyncClient(
-        timeout=settings.crawl_timeout_s, headers={"User-Agent": settings.user_agent}
-    )
+    client = httpx.AsyncClient(timeout=settings.crawl_timeout_s, headers={"User-Agent": settings.user_agent})
     deps = Deps(settings=settings, store=store, client=client)
     app.state.deps = deps
     scheduler = Scheduler(deps)
-    if settings.scheduler_enabled:
+    managed: ManagedWorker | None = None
+    scheduler_running = False
+    if settings.beacon_managed_mode:
+        if not settings.beacon_configured:
+            raise RuntimeError("Managed mode requires BEACON_CONTROL_PLANE_URL and BEACON_WORKER_TOKEN")
+        managed = ManagedWorker(settings=settings, store=store, http=client)
+        managed.start()
+    elif settings.scheduler_enabled:
         scheduler.start()
+        scheduler_running = True
+    app.state.managed = managed
+    app.state.scheduler_running = scheduler_running
     try:
         yield
     finally:
+        if managed is not None:
+            await managed.stop()
         await scheduler.stop()
         await client.aclose()
         await store.close()
 
 
-app = FastAPI(title="seo-agent", lifespan=lifespan)
+app = FastAPI(title="Hyrule Beacon Worker", lifespan=lifespan)
 
 
 @app.get("/health")
 async def health() -> dict[str, Any]:
     deps: Deps = app.state.deps
-    findings = await deps.store.active_findings()
-    by_severity: dict[str, int] = {}
-    for f in findings:
-        by_severity[f.severity] = by_severity.get(f.severity, 0) + 1
+    managed: ManagedWorker | None = app.state.managed
+    if managed is not None:
+        by_severity = dict(managed.finding_counts)
+        last_runs: list[dict[str, Any]] = []
+    else:
+        findings = await deps.store.active_findings()
+        by_severity = {}
+        for finding in findings:
+            by_severity[finding.severity] = by_severity.get(finding.severity, 0) + 1
+        last_runs = await deps.store.last_runs(5)
     for severity in ("error", "warning", "info"):
         ACTIVE_FINDINGS.labels(severity=severity).set(by_severity.get(severity, 0))
     return {
         "status": "ok",
         "environment": settings.environment,
-        "dry_run": settings.dry_run,
-        "scheduler_enabled": settings.scheduler_enabled,
+        "scheduler_enabled": bool(app.state.scheduler_running),
+        "beacon_managed_mode": settings.beacon_managed_mode,
+        "beacon_configured": settings.beacon_configured,
+        "beacon_current_run": (app.state.managed.current_run_id if app.state.managed is not None else None),
+        "beacon_last_error": (app.state.managed.last_error if app.state.managed is not None else None),
         "active_findings": by_severity,
-        "last_runs": await deps.store.last_runs(5),
+        "last_runs": last_runs,
     }
 
 

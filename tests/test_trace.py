@@ -13,7 +13,6 @@ from app import agent_core_trace as act
 def test_disabled_returns_zero(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv(act.FLAG_ENV, raising=False)
     assert act.emit_run_trace("audit", run_id="r", ok=True, summary="s") == 0
-    assert act.emit_pr_decision(run_id="r", decision="draft", title="t") == 0
 
 
 def _enable_jsonl(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
@@ -50,27 +49,6 @@ def test_run_trace_emits_valid_trace_event(monkeypatch: pytest.MonkeyPatch, tmp_
     from agent_core.contracts.tracing import TraceEvent
 
     TraceEvent.model_validate(event)
-
-
-def test_pr_decision_event_links_and_repo(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    out = _enable_jsonl(monkeypatch, tmp_path)
-    delivered = act.emit_pr_decision(
-        run_id="draft-1",
-        decision="draft",
-        title="tighten meta",
-        branch="seo-agent/20260717-abc",
-        pr_url="https://github.com/AS215932/hyrule-web/pull/99",
-        finding_fingerprints=["f1"],
-        rationale="x" * 999,
-        dry_run=False,
-    )
-    assert delivered == 1
-    event = json.loads(out.read_text().splitlines()[-1])
-    assert event["event_type"] == "seo_pr_decision"
-    assert event["repository"] == "AS215932/hyrule-web"
-    assert event["links"][0]["url"].endswith("/pull/99")
-    assert event["payload"]["decision"] == "draft"
-    assert len(event["payload"]["rationale"]) <= 400
 
 
 def test_invalid_cost_is_swallowed(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

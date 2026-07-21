@@ -54,7 +54,7 @@ async def test_render_embed_includes_metrics_and_worst(store: Store) -> None:
     await _seed(store)
     payload = render_discord_embed(await build_summary(store))
     embed = payload["embeds"][0]  # type: ignore[index]
-    assert "seo-agent weekly summary" in embed["title"]
+    assert "Hyrule Beacon weekly summary" in embed["title"]
     assert "[error] broken_link" in embed["description"]
     names = [f["name"] for f in embed["fields"]]
     assert "Open findings" in names

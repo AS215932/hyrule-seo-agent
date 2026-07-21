@@ -9,6 +9,7 @@ import pytest
 
 import app.cli as cli
 from app.config import settings
+from app.managed import ManagedRunResult
 from app.pipeline import PhaseOutcome
 
 
@@ -36,6 +37,22 @@ async def test_phase_exit_codes(monkeypatch: pytest.MonkeyPatch, capsys) -> None
 
     monkeypatch.setitem(cli._PHASES, "run-audit", bad_phase)
     assert await cli._with_deps("run-audit") == 1
+
+
+async def test_beacon_once_returns_nonzero_for_a_failed_lease(monkeypatch: pytest.MonkeyPatch, capsys) -> None:
+    async def failed_lease(settings, store, client):
+        return ManagedRunResult(leased=True, ok=False, error="graph failed")
+
+    monkeypatch.setattr(cli, "run_one_managed_lease", failed_lease)
+
+    assert await cli._with_deps("beacon-once") == 1
+    output = json.loads(capsys.readouterr().out)
+    assert output == {
+        "leased": True,
+        "ok": False,
+        "awaitingApproval": False,
+        "error": "graph failed",
+    }
 
 
 def test_main_parses_argv(monkeypatch: pytest.MonkeyPatch, capsys) -> None:

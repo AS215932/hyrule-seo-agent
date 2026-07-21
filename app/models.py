@@ -83,21 +83,3 @@ class MetricSample(BaseModel):
     metric: str
     key: str = ""
     value: float
-
-
-class DraftEdit(BaseModel):
-    """One mechanical find/replace the drafter proposes. ``find`` must occur
-    exactly once in ``path`` or the edit is rejected."""
-
-    path: str
-    find: str
-    replace: str
-
-
-class DraftProposal(BaseModel):
-    """Structured drafter output — validated mechanically before any git use."""
-
-    title: str
-    rationale: str
-    body: str
-    edits: list[DraftEdit] = Field(default_factory=list)

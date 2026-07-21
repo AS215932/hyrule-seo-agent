@@ -2,14 +2,12 @@
 
 Emission is strictly best-effort: a missing ``agent-core`` install, collector
 failures, invalid payload shapes, and file/HTTP errors are all swallowed so
-the audit/draft pipeline can never be affected by observability delivery.
+the evidence pipeline can never be affected by observability delivery.
 Mirrors ``hyrule-soc-agent/app/agent_core_trace.py`` with SEO-shaped events.
 
-Contract note (agent-core v0.8.0): ``InsightLoop``/``LoopKind`` have no
-``"seo"`` member, so this module emits plain TraceEvents only — the
-``seo_pr_decision`` event carries the decision payload that would otherwise
-ride a LoopDecisionEnvelope. Upgrade to envelope emission once agent-core
-ships a tag whose ``InsightLoop`` includes ``"seo"``.
+Contract note: agent-core's loop kinds do not yet include SEO, so this module
+emits plain TraceEvents. Upgrade to envelope emission when the shared contract
+adds a suitable loop kind.
 """
 
 from __future__ import annotations
@@ -68,54 +66,6 @@ def emit_run_trace(
                 **_jsonish(dict(stats or {})),
                 # Crawl/GSC/referrer-derived text is untrusted site/search data;
                 # never re-feed trace payloads to a model raw.
-                "untrusted_loop_text": True,
-                "model_consumption_allowed": False,
-            },
-        )
-        sink = sink_mod.sink_from_env(FLAG_ENV)
-        return 1 if sink.emit(event) else 0
-    except Exception:
-        return 0
-
-
-def emit_pr_decision(
-    *,
-    run_id: str,
-    decision: str,
-    title: str,
-    branch: str = "",
-    pr_url: str = "",
-    finding_fingerprints: list[str] | None = None,
-    rationale: str = "",
-    dry_run: bool = True,
-) -> int:
-    """Emit the draft/stay_silent decision for one draft cycle."""
-    if not enabled():
-        return 0
-    try:
-        tracing_mod = importlib.import_module("agent_core.contracts.tracing")
-        sink_mod = importlib.import_module("agent_core.tracing.sink")
-        links = []
-        if pr_url:
-            links.append({"kind": "other", "label": "Draft PR", "url": pr_url, "ref_id": branch})
-        event = tracing_mod.TraceEvent(
-            event_type="seo_pr_decision",
-            graph_id=GRAPH_ID,
-            node_id="draft",
-            agent_role=AGENT_ROLE,
-            environment=_environment(),
-            run_id=run_id,
-            trace_id=run_id,
-            repository="AS215932/hyrule-web",
-            summary=_safe_text(f"draft decision: {decision} — {title}" if title else f"draft decision: {decision}"),
-            links=links,
-            payload={
-                "decision": decision,
-                "branch": branch,
-                "pr_url": pr_url,
-                "dry_run": dry_run,
-                "finding_fingerprints": list(finding_fingerprints or []),
-                "rationale": _safe_text(rationale, limit=400),
                 "untrusted_loop_text": True,
                 "model_consumption_allowed": False,
             },
