@@ -35,13 +35,33 @@ async def _with_deps(command: str) -> int:
                 print(json.dumps(await build_summary(store), indent=2, default=str))
                 return 0
             if command == "beacon-once":
-                worked = await run_one_managed_lease(settings, store, client)
-                print(json.dumps({"leased": worked}, indent=2))
-                return 0
-            outcome = await _PHASES[command](deps)
-            print(json.dumps({"kind": outcome.kind, "ok": outcome.ok, "summary": outcome.summary,
-                              "stats": outcome.stats}, indent=2, default=str))
-            return 0 if outcome.ok else 1
+                managed_result = await run_one_managed_lease(settings, store, client)
+                print(
+                    json.dumps(
+                        {
+                            "leased": managed_result.leased,
+                            "ok": managed_result.ok,
+                            "awaitingApproval": managed_result.awaiting_approval,
+                            "error": managed_result.error,
+                        },
+                        indent=2,
+                    )
+                )
+                return 0 if managed_result.ok else 1
+            phase_outcome = await _PHASES[command](deps)
+            print(
+                json.dumps(
+                    {
+                        "kind": phase_outcome.kind,
+                        "ok": phase_outcome.ok,
+                        "summary": phase_outcome.summary,
+                        "stats": phase_outcome.stats,
+                    },
+                    indent=2,
+                    default=str,
+                )
+            )
+            return 0 if phase_outcome.ok else 1
         finally:
             await store.close()
 

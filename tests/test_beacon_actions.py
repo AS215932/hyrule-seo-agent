@@ -33,7 +33,16 @@ def test_optimize_policy_separates_automatic_approval_and_manual_work() -> None:
             {"channelKey": "x402_list", "present": False},
             {"channelKey": "a2alist", "present": False},
         ],
-        evidence={"surfaces": {"http:sitemap": {"status": 200, "sha256": "abc", "text": VALID_SITEMAP}}},
+        evidence={
+            "surfaces": {
+                "http:sitemap": {
+                    "status": 200,
+                    "sha256": "abc",
+                    "text": VALID_SITEMAP,
+                    "requested_url": "https://hyrule.host/sitemap.xml",
+                }
+            }
+        },
     )
     risks = {(action["actionType"], action["risk"]) for action in actions}
     assert ("indexnow.submit", "automatic") in risks
@@ -41,6 +50,29 @@ def test_optimize_policy_separates_automatic_approval_and_manual_work() -> None:
     assert ("registry.create_listing", "approval_required") in risks
     assert ("registry.paid_form", "manual") in risks
     assert all(action["idempotencyKey"].startswith("run-1:") for action in actions)
+
+
+def test_indexnow_proposal_uses_the_collected_configured_host() -> None:
+    actions = plan_actions(
+        run_id="run-host",
+        mode="optimize",
+        scopes=["http"],
+        findings=[{"code": "http.tools_index.missing"}],
+        observations=[],
+        evidence={
+            "surfaces": {
+                "http:sitemap": {
+                    "status": 200,
+                    "sha256": "abc",
+                    "text": "<urlset><url><loc>https://docs.example.test/</loc></url></urlset>",
+                    "requested_url": "https://docs.example.test/sitemap.xml",
+                }
+            }
+        },
+    )
+
+    proposal = next(action for action in actions if action["actionType"] == "indexnow.submit")
+    assert proposal["payload"]["host"] == "docs.example.test"
 
 
 def test_unavailable_partial_measurements_do_not_propose_repairs() -> None:

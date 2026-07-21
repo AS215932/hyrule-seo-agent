@@ -25,14 +25,22 @@ class EventEmitter:
         node: str | None,
         data: dict[str, Any],
     ) -> str:
-        logical_event = json.dumps(
-            {
+        identity: dict[str, Any] = {
+            "runId": self._lease.run.id,
+            "type": event_type,
+            "node": node,
+            "message": message,
+            "data": data,
+        }
+        idempotency_key = data.get("idempotencyKey")
+        if event_type == "action_result" and isinstance(idempotency_key, str) and idempotency_key:
+            identity = {
                 "runId": self._lease.run.id,
                 "type": event_type,
-                "node": node,
-                "message": message,
-                "data": data,
-            },
+                "idempotencyKey": idempotency_key,
+            }
+        logical_event = json.dumps(
+            identity,
             sort_keys=True,
             separators=(",", ":"),
         )

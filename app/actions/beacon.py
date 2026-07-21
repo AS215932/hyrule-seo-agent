@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 from typing import Any
+from urllib.parse import urlsplit
 
 import httpx
 
@@ -69,10 +70,19 @@ def plan_actions(
     }
     if "http" in scopes and actionable_http_codes:
         sitemap = evidence.get("surfaces", {}).get("http:sitemap", {})
+        sitemap_source = str(sitemap.get("requested_url") or sitemap.get("url") or "")
+        try:
+            parsed_sitemap = urlsplit(sitemap_source)
+            sitemap_host = (
+                parsed_sitemap.netloc if parsed_sitemap.scheme in {"http", "https"} and parsed_sitemap.hostname else ""
+            )
+        except ValueError:
+            sitemap_host = ""
         if (
             sitemap.get("status") == 200
             and not sitemap.get("truncated")
             and has_usable_sitemap(str(sitemap.get("text", "")))
+            and sitemap_host
         ):
             actions.append(
                 _proposal(
@@ -80,7 +90,7 @@ def plan_actions(
                     "indexnow.submit",
                     "automatic",
                     {
-                        "host": "hyrule.host",
+                        "host": sitemap_host,
                         "sitemapSha256": sitemap.get("sha256"),
                         "reason": "Public HTTP surface changed or needs recrawling.",
                     },
@@ -108,7 +118,8 @@ def plan_actions(
             )
         )
 
-    if "x402" in scopes and any(code.startswith("x402.") for code in codes):
+    actionable_x402_codes = {code for code in codes if code.startswith("x402.") and code != "x402.health.unavailable"}
+    if "x402" in scopes and actionable_x402_codes:
         actions.append(
             _proposal(
                 run_id,
@@ -117,7 +128,7 @@ def plan_actions(
                 {
                     "repository": "AS215932/hyrule-cloud",
                     "surface": "x402",
-                    "findingCodes": sorted(code for code in codes if code.startswith("x402.")),
+                    "findingCodes": sorted(actionable_x402_codes),
                     "workflow": "repair_manifest_openapi_from_canonical_catalog",
                 },
                 validation={

@@ -31,7 +31,18 @@ async def test_analysis_is_optional() -> None:
 async def test_model_analysis_returns_only_structured_advice(monkeypatch) -> None:
     output = VisibilityAnalysis(
         summary="Repair public metadata first.",
-        priorities=[Priority(title="Metadata", rationale="Live drift", finding_codes=["x402.drift"])],
+        priorities=[
+            Priority(
+                title="Metadata",
+                rationale="Live drift",
+                finding_codes=["x402.drift", "invented.finding"],
+            ),
+            Priority(
+                title="Hallucinated",
+                rationale="Not grounded",
+                finding_codes=["invented.only"],
+            ),
+        ],
     )
 
     class FakeAgent:
@@ -52,6 +63,7 @@ async def test_model_analysis_returns_only_structured_advice(monkeypatch) -> Non
     assert result is not None
     assert result["basis"] == "model_assisted_live_evidence"
     assert result["priorities"][0]["finding_codes"] == ["x402.drift"]
+    assert len(result["priorities"]) == 1
 
 
 async def test_model_failure_falls_back_without_blocking(monkeypatch) -> None:

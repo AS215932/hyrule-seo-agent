@@ -74,7 +74,9 @@ async def test_run_once_handles_no_work(worker_deps) -> None:
     settings, store, http = worker_deps
     worker = ManagedWorker(settings=settings, store=store, http=http)
     worker._client = FakeClient(None)
-    assert await worker.run_once() is False
+    result = await worker.run_once()
+    assert result.leased is False
+    assert result.ok is True
 
 
 async def test_run_once_completes_success_and_pauses_without_completion(worker_deps, monkeypatch) -> None:
@@ -87,7 +89,9 @@ async def test_run_once_completes_success_and_pauses_without_completion(worker_d
         return GraphOutcome(state={"summary": {}}, awaiting_approval=False)
 
     monkeypatch.setattr(managed_module, "run_graph", success)
-    assert await worker.run_once() is True
+    result = await worker.run_once()
+    assert result.leased is True
+    assert result.ok is True
     assert fake.completions == [("succeeded", None)]
     assert worker.current_run_id is None
     assert worker.last_error is None
@@ -98,7 +102,10 @@ async def test_run_once_completes_success_and_pauses_without_completion(worker_d
         return GraphOutcome(state={}, awaiting_approval=True)
 
     monkeypatch.setattr(managed_module, "run_graph", paused)
-    assert await worker.run_once() is True
+    result = await worker.run_once()
+    assert result.leased is True
+    assert result.ok is True
+    assert result.awaiting_approval is True
     assert fake.completions == [("succeeded", None)]
 
 
@@ -112,7 +119,9 @@ async def test_run_once_records_failure_and_reports_it(worker_deps, monkeypatch)
         raise ValueError("bad graph")
 
     monkeypatch.setattr(managed_module, "run_graph", broken)
-    assert await worker.run_once() is True
+    result = await worker.run_once()
+    assert result.leased is True
+    assert result.ok is False
     assert worker.last_error == "ValueError: bad graph"
     assert fake.completions[0][0] == "failed"
     assert "bad graph" in (fake.completions[0][1] or "")
@@ -135,7 +144,9 @@ async def test_failed_execution_completes_the_run_as_failed(worker_deps, monkeyp
 
     monkeypatch.setattr(managed_module, "run_graph", action_failed)
 
-    assert await worker.run_once() is True
+    result = await worker.run_once()
+    assert result.leased is True
+    assert result.ok is False
     assert fake.completions == [("failed", "1 automatic action execution(s) failed")]
     assert worker.finding_counts == {"warning": 1}
 
@@ -157,7 +168,9 @@ async def test_completion_failure_retains_the_terminal_checkpoint(worker_deps, m
     monkeypatch.setattr(managed_module, "run_graph", success)
     monkeypatch.setattr(managed_module, "delete_graph_checkpoint", record_delete)
 
-    assert await worker.run_once() is True
+    result = await worker.run_once()
+    assert result.leased is True
+    assert result.ok is False
     assert deleted == []
     assert "control plane unavailable" in (worker.last_error or "")
 
@@ -183,7 +196,9 @@ async def test_renewal_failure_cancels_the_active_graph(worker_deps, monkeypatch
     monkeypatch.setattr(worker, "_renew_lease", renewal_failed)
     monkeypatch.setattr(managed_module, "run_graph", slow_graph)
 
-    assert await worker.run_once() is True
+    result = await worker.run_once()
+    assert result.leased is True
+    assert result.ok is False
     assert cancelled is True
     assert fake.completions[0][0] == "failed"
     assert "heartbeat failed" in (fake.completions[0][1] or "")

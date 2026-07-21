@@ -18,9 +18,22 @@ def _resource(status: int, text: str = "", *, url: str = "https://example.test")
     }
 
 
+def _distribution_surfaces() -> dict[str, dict]:
+    return {
+        "skills:umbrella": _resource(
+            200,
+            "---\nname: hyrule-cloud\ndescription: Operate Hyrule Cloud\n---\n# Hyrule Cloud\n",
+        ),
+        "mcp:descriptor": _resource(
+            200,
+            '{"name":"io.github.AS215932/hyrule-cloud","version":"0.1.0","packages":[{"registryType":"pypi"}]}',
+        ),
+    }
+
+
 def test_inaccessible_channel_is_unknown_not_false_observation() -> None:
     evidence = {
-        "surfaces": {},
+        "surfaces": _distribution_surfaces(),
         "channels": {"x402_list": _resource(0)},
         "channel_specs": [
             {
@@ -40,7 +53,7 @@ def test_inaccessible_channel_is_unknown_not_false_observation() -> None:
 def test_non_200_channel_response_is_unknown_not_absent() -> None:
     for status in (204, 302):
         evidence = {
-            "surfaces": {},
+            "surfaces": _distribution_surfaces(),
             "channels": {"catalog": _resource(status, "")},
             "channel_specs": [
                 {
@@ -66,7 +79,7 @@ def test_malformed_or_truncated_json_channel_is_unknown() -> None:
         {**_resource(200, '{"results": []}'), "truncated": True},
     ):
         evidence = {
-            "surfaces": {},
+            "surfaces": _distribution_surfaces(),
             "channels": {"mcp_registry": resource},
             "channel_specs": [
                 {
@@ -89,7 +102,7 @@ def test_malformed_or_truncated_json_channel_is_unknown() -> None:
 def test_deep_json_channel_is_traversed_without_recursion_failure() -> None:
     body = "[" * 1_200 + '{"name":"Hyrule","url":"https://cloud.hyrule.host"}' + "]" * 1_200
     evidence = {
-        "surfaces": {},
+        "surfaces": _distribution_surfaces(),
         "channels": {"catalog": _resource(200, body)},
         "channel_specs": [
             {
@@ -112,7 +125,7 @@ def test_deep_json_channel_is_traversed_without_recursion_failure() -> None:
 def test_every_truncated_channel_kind_is_unknown() -> None:
     for result_kind in ("html", "direct", "document"):
         evidence = {
-            "surfaces": {},
+            "surfaces": _distribution_surfaces(),
             "channels": {
                 "catalog": {
                     **_resource(200, "unrelated result before the cutoff"),
@@ -139,7 +152,7 @@ def test_every_truncated_channel_kind_is_unknown() -> None:
 
 def test_public_listing_presence_is_measured_without_inventing_rank() -> None:
     evidence = {
-        "surfaces": {},
+        "surfaces": _distribution_surfaces(),
         "channels": {"skills_sh": _resource(200, "Install AS215932/hyrule-cloud")},
         "channel_specs": [
             {
@@ -158,6 +171,24 @@ def test_public_listing_presence_is_measured_without_inventing_rank() -> None:
     assert result["findings"] == []
 
 
+def test_distribution_prerequisites_are_audited() -> None:
+    evidence = {
+        "surfaces": {
+            "skills:umbrella": _resource(200, "# Missing frontmatter"),
+            "mcp:descriptor": _resource(200, '{"name":"hyrule"}'),
+        },
+        "channels": {},
+        "channel_specs": [],
+    }
+
+    result = audit_evidence(evidence, ["distribution"])
+
+    assert {finding["code"] for finding in result["findings"]} == {
+        "distribution.skill_source.invalid",
+        "distribution.mcp_descriptor.invalid",
+    }
+
+
 def test_x402_manifest_openapi_drift_is_deterministic() -> None:
     evidence = {
         "surfaces": {
@@ -168,6 +199,7 @@ def test_x402_manifest_openapi_drift_is_deterministic() -> None:
             "x402:manifest": _resource(
                 200, '{"x402Version":2,"resources":[{"method":"POST","path":"/manifest-only"}]}'
             ),
+            "x402:health": _resource(200),
         },
         "channels": {},
         "channel_specs": [],
@@ -176,6 +208,38 @@ def test_x402_manifest_openapi_drift_is_deterministic() -> None:
     codes = {finding["code"] for finding in result["findings"]}
     assert "x402.catalog.drift" in codes
     assert "x402.intent_descriptions.weak" in codes
+
+
+def test_x402_health_failure_is_audited_independently() -> None:
+    evidence = {
+        "surfaces": {
+            "x402:openapi": _resource(200, '{"paths":{}}'),
+            "x402:manifest": _resource(200, '{"x402Version":2,"resources":[]}'),
+            "x402:health": _resource(503, "unavailable"),
+        }
+    }
+
+    result = audit_evidence(evidence, ["x402"])
+
+    assert {finding["code"] for finding in result["findings"]} == {"x402.health.unavailable"}
+
+
+def test_manifest_rejects_non_array_catalog_shapes() -> None:
+    for catalog in ({"method": "GET"}, "not-a-list", 42):
+        evidence = {
+            "surfaces": {
+                "x402:openapi": _resource(200, '{"paths":{}}'),
+                "x402:manifest": _resource(
+                    200,
+                    json.dumps({"x402Version": 2, "resources": catalog}),
+                ),
+                "x402:health": _resource(200),
+            }
+        }
+
+        result = audit_evidence(evidence, ["x402"])
+
+        assert "x402.manifest.invalid" in {finding["code"] for finding in result["findings"]}
 
 
 def test_empty_manifest_is_catalog_drift_when_openapi_has_paid_operations() -> None:
@@ -356,6 +420,7 @@ def test_full_openapi_free_and_authenticated_routes_are_not_catalog_drift() -> N
                 200,
                 '{"x402Version":2,"resources":[{"method":"POST","path":"/v1/dns/lookup"}]}',
             ),
+            "x402:health": _resource(200),
         },
         "channels": {},
         "channel_specs": [],
@@ -372,6 +437,7 @@ def test_malformed_openapi_paths_is_reported_instead_of_crashing() -> None:
             "surfaces": {
                 "x402:openapi": _resource(200, f'{{"paths":{json.dumps(paths)}}}'),
                 "x402:manifest": _resource(200, '{"x402Version":2,"resources":[]}'),
+                "x402:health": _resource(200),
             }
         }
 
@@ -404,7 +470,7 @@ def test_manifest_absolute_urls_compare_as_normalized_paths() -> None:
 
 def test_search_query_echo_is_not_listing_evidence() -> None:
     evidence = {
-        "surfaces": {},
+        "surfaces": _distribution_surfaces(),
         "channels": {
             "x402_list": _resource(
                 200,
@@ -431,7 +497,7 @@ def test_search_query_echo_is_not_listing_evidence() -> None:
 
 def test_html_listing_records_the_actual_result_url() -> None:
     evidence = {
-        "surfaces": {},
+        "surfaces": _distribution_surfaces(),
         "channels": {
             "x402_list": _resource(
                 200,

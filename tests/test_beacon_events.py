@@ -68,3 +68,38 @@ async def test_retried_logical_event_reuses_id_and_is_not_reposted() -> None:
     assert retried.sequence == accepted.sequence
     assert retry_client.events == [next_event]
     assert next_event.sequence == accepted.sequence + 1
+
+
+async def test_action_result_identity_ignores_mutable_executor_output() -> None:
+    first_client = RecordingClient()
+    first = EventEmitter(first_client, _lease())
+    accepted = await first.emit(
+        "action_result",
+        "indexnow.submit: succeeded",
+        node="execute_automatic",
+        data={
+            "idempotencyKey": "run-1:indexnow",
+            "status": "succeeded",
+            "result": {"indexnowStatus": "submitted", "pinged": True},
+        },
+    )
+
+    retry_client = RecordingClient()
+    retry = EventEmitter(
+        retry_client,
+        _lease([ExistingEvent(id=accepted.id, sequence=accepted.sequence, type=accepted.type)]),
+    )
+    retried = await retry.emit(
+        "action_result",
+        "indexnow.submit: succeeded after retry",
+        node="execute_automatic",
+        data={
+            "idempotencyKey": "run-1:indexnow",
+            "status": "succeeded",
+            "result": {"indexnowStatus": "unchanged", "pinged": False},
+        },
+    )
+
+    assert retried.id == accepted.id
+    assert retried.sequence == accepted.sequence
+    assert retry_client.events == []

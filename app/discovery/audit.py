@@ -43,7 +43,7 @@ def _json(resource: dict[str, Any] | None) -> dict[str, Any] | None:
         return None
     try:
         value = json.loads(resource.get("text", ""))
-    except json.JSONDecodeError, TypeError:
+    except json.JSONDecodeError, TypeError, RecursionError:
         return None
     return value if isinstance(value, dict) else None
 
@@ -139,17 +139,23 @@ def _normalized_path(value: str) -> str:
     return path.rstrip("/") or "/"
 
 
-def _manifest_operations(manifest: dict[str, Any]) -> set[tuple[str, str]]:
-    candidates = manifest.get("resources") or manifest.get("endpoints") or []
+def _manifest_catalog(manifest: dict[str, Any]) -> list[Any] | None:
+    for key in ("resources", "endpoints"):
+        if key not in manifest or manifest[key] is None:
+            continue
+        return manifest[key] if isinstance(manifest[key], list) else None
+    return None
+
+
+def _manifest_operations(candidates: list[Any]) -> set[tuple[str, str]]:
     operations: set[tuple[str, str]] = set()
-    if isinstance(candidates, list):
-        for item in candidates:
-            if not isinstance(item, dict):
-                continue
-            method = item.get("method")
-            path = item.get("path") or item.get("resource") or item.get("url")
-            if isinstance(method, str) and isinstance(path, str):
-                operations.add((method.upper(), _normalized_path(path)))
+    for item in candidates:
+        if not isinstance(item, dict):
+            continue
+        method = item.get("method")
+        path = item.get("path") or item.get("resource") or item.get("url")
+        if isinstance(method, str) and isinstance(path, str):
+            operations.add((method.upper(), _normalized_path(path)))
     return operations
 
 
@@ -174,6 +180,17 @@ def _paid_openapi_operations(openapi: dict[str, Any]) -> set[tuple[str, str]]:
 
 def _audit_x402(surfaces: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
     findings: list[dict[str, Any]] = []
+    health = surfaces.get("x402:health")
+    if not health or health.get("status") != 200:
+        findings.append(
+            _finding(
+                "x402.health.unavailable",
+                "x402 service health is unavailable",
+                f"Expected a 200 response from /health; observed {health.get('status') if health else 'no response'}.",
+                severity="error",
+                evidence_r2_key=_evidence_key(health),
+            )
+        )
     openapi = _json(surfaces.get("x402:openapi"))
     manifest = _json(surfaces.get("x402:manifest"))
     if openapi is None or not isinstance(openapi.get("paths"), dict):
@@ -187,21 +204,24 @@ def _audit_x402(surfaces: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
             )
         )
         openapi = None
-    if manifest is None:
+    manifest_catalog = _manifest_catalog(manifest) if manifest is not None else None
+    if manifest is None or manifest_catalog is None:
         findings.append(
             _finding(
                 "x402.manifest.invalid",
                 "x402 discovery manifest is unavailable",
-                "The canonical /.well-known/x402.json must return a valid JSON object.",
+                "The canonical /.well-known/x402.json must return a valid JSON object with a resources or endpoints array.",
                 severity="error",
                 evidence_r2_key=_evidence_key(surfaces.get("x402:manifest")),
             )
         )
+        manifest = None
     if openapi is None or manifest is None:
         return findings
+    assert manifest_catalog is not None
 
     openapi_operations = _paid_openapi_operations(openapi)
-    manifest_operations = _manifest_operations(manifest)
+    manifest_operations = _manifest_operations(manifest_catalog)
     missing_from_openapi = sorted(manifest_operations - openapi_operations)
     missing_from_manifest = sorted(openapi_operations - manifest_operations)
     if missing_from_openapi or missing_from_manifest:
@@ -432,6 +452,29 @@ def _listing_result(
 def _audit_distribution(evidence: dict[str, Any]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     findings: list[dict[str, Any]] = []
     observations: list[dict[str, Any]] = []
+    surfaces = evidence.get("surfaces", {})
+    skill = surfaces.get("skills:umbrella")
+    if not _valid_skill_document(skill):
+        findings.append(
+            _finding(
+                "distribution.skill_source.invalid",
+                "Umbrella skill source is unavailable or malformed",
+                "The public SKILL.md must return a complete document with name and description frontmatter.",
+                severity="error",
+                evidence_r2_key=_evidence_key(skill),
+            )
+        )
+    descriptor = surfaces.get("mcp:descriptor")
+    if not _valid_mcp_descriptor(descriptor):
+        findings.append(
+            _finding(
+                "distribution.mcp_descriptor.invalid",
+                "MCP registry descriptor is unavailable or malformed",
+                "The public server.json must identify a versioned server and at least one package or remote.",
+                severity="error",
+                evidence_r2_key=_evidence_key(descriptor),
+            )
+        )
     channel_results = evidence.get("channels", {})
     markers = tuple(str(value).lower() for value in evidence.get("markers", []))
     observed_at = datetime.now(UTC).isoformat()
@@ -495,6 +538,40 @@ def _audit_distribution(evidence: dict[str, Any]) -> tuple[list[dict[str, Any]],
                 )
             )
     return findings, observations
+
+
+def _valid_skill_document(resource: dict[str, Any] | None) -> bool:
+    if not resource or resource.get("status") != 200 or resource.get("truncated"):
+        return False
+    lines = str(resource.get("text", "")).splitlines()
+    if not lines or lines[0].strip() != "---":
+        return False
+    try:
+        closing = next(index for index, line in enumerate(lines[1:], 1) if line.strip() == "---")
+    except StopIteration:
+        return False
+    frontmatter = lines[1:closing]
+    return all(
+        any(line.strip().startswith(f"{field}:") and line.partition(":")[2].strip() for line in frontmatter)
+        for field in ("name", "description")
+    )
+
+
+def _valid_mcp_descriptor(resource: dict[str, Any] | None) -> bool:
+    if not resource or resource.get("truncated"):
+        return False
+    payload = _json(resource)
+    if payload is None:
+        return False
+    distributions = payload.get("packages") or payload.get("remotes")
+    return (
+        isinstance(payload.get("name"), str)
+        and bool(payload["name"].strip())
+        and isinstance(payload.get("version"), str)
+        and bool(payload["version"].strip())
+        and isinstance(distributions, list)
+        and any(isinstance(item, dict) for item in distributions)
+    )
 
 
 def audit_evidence(evidence: dict[str, Any], scopes: list[str]) -> dict[str, list[dict[str, Any]]]:

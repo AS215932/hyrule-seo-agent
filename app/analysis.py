@@ -97,8 +97,18 @@ async def analyze_with_model(
             system_prompt=SYSTEM_PROMPT,
         )
         result = await agent.run(json.dumps(normalized, separators=(",", ":")))
+        output = result.output.model_dump(by_alias=True, mode="json")
+        allowed_codes = {
+            item["code"] for item in normalized["findings"] if isinstance(item.get("code"), str) and item["code"]
+        }
+        priorities = []
+        for priority in output.get("priorities", []):
+            filtered_codes = [code for code in priority.get("finding_codes", []) if code in allowed_codes]
+            if filtered_codes:
+                priorities.append({**priority, "finding_codes": filtered_codes})
         return {
-            **result.output.model_dump(by_alias=True, mode="json"),
+            **output,
+            "priorities": priorities,
             "basis": "model_assisted_live_evidence",
             "model": model_id,
         }

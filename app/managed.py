@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+from dataclasses import dataclass
 import httpx
 import structlog
 
@@ -14,6 +15,14 @@ from app.graph import GraphOutcome, delete_graph_checkpoint, run_graph
 from app.store import Store
 
 log = structlog.get_logger()
+
+
+@dataclass(frozen=True, slots=True)
+class ManagedRunResult:
+    leased: bool
+    ok: bool
+    awaiting_approval: bool = False
+    error: str | None = None
 
 
 class ManagedWorker:
@@ -45,10 +54,10 @@ class ManagedWorker:
             await self._task
         self._task = None
 
-    async def run_once(self) -> bool:
+    async def run_once(self) -> ManagedRunResult:
         lease = await self._client.lease()
         if lease is None:
-            return False
+            return ManagedRunResult(leased=False, ok=True)
         self.current_run_id = lease.run.id
         renewal = asyncio.create_task(
             self._renew_lease(lease.run.id, lease.lease_token),
@@ -61,12 +70,12 @@ class ManagedWorker:
                 raise
             except Exception as exc:
                 await self._report_graph_failure(lease, exc)
-                return True
+                return ManagedRunResult(leased=True, ok=False, error=self.last_error)
 
             self.finding_counts = self._count_findings(outcome)
             if outcome.awaiting_approval:
                 self.last_error = None
-                return True
+                return ManagedRunResult(leased=True, ok=True, awaiting_approval=True)
 
             failed = [
                 execution
@@ -91,10 +100,15 @@ class ManagedWorker:
                     run_id=lease.run.id,
                     completion_status=status,
                 )
-                return True
-            await self._delete_acknowledged_checkpoint(lease)
-            self.last_error = error_message
-            return True
+                return ManagedRunResult(leased=True, ok=False, error=self.last_error)
+            checkpoint_deleted = await self._delete_acknowledged_checkpoint(lease)
+            if checkpoint_deleted:
+                self.last_error = error_message
+            return ManagedRunResult(
+                leased=True,
+                ok=not failed and checkpoint_deleted,
+                error=self.last_error,
+            )
         finally:
             renewal.cancel()
             with contextlib.suppress(asyncio.CancelledError, Exception):
@@ -143,12 +157,14 @@ class ManagedWorker:
             return
         await self._delete_acknowledged_checkpoint(lease)
 
-    async def _delete_acknowledged_checkpoint(self, lease: BeaconLease) -> None:
+    async def _delete_acknowledged_checkpoint(self, lease: BeaconLease) -> bool:
         try:
             await delete_graph_checkpoint(self._settings, lease.run.thread_id)
         except Exception as exc:
             self.last_error = f"{type(exc).__name__}: {str(exc)[:500]}"
             log.exception("beacon_checkpoint_cleanup_failed", run_id=lease.run.id)
+            return False
+        return True
 
     @staticmethod
     def _count_findings(outcome: GraphOutcome) -> dict[str, int]:
@@ -169,8 +185,8 @@ class ManagedWorker:
     async def _loop(self) -> None:
         while True:
             try:
-                worked = await self.run_once()
-                if not worked:
+                result = await self.run_once()
+                if not result.leased or not result.ok:
                     await asyncio.sleep(self._settings.beacon_poll_interval_s)
             except asyncio.CancelledError:
                 raise
@@ -180,7 +196,7 @@ class ManagedWorker:
                 await asyncio.sleep(self._settings.beacon_poll_interval_s)
 
 
-async def run_one_managed_lease(settings: Settings, store: Store, http: httpx.AsyncClient) -> bool:
+async def run_one_managed_lease(settings: Settings, store: Store, http: httpx.AsyncClient) -> ManagedRunResult:
     """CLI/test seam: lease and execute at most one control-plane run."""
 
     if not settings.beacon_configured:
