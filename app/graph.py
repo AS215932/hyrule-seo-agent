@@ -165,7 +165,7 @@ def _build_graph(checkpointer: AsyncSqliteSaver, deps: GraphDeps):
         )
         return {"actions": actions}
 
-    def route_after_plan(state: BeaconState) -> str:
+    def route_after_automatic(state: BeaconState) -> str:
         if any(action["risk"] == "approval_required" for action in state["actions"]):
             return "approval"
         return "execute"
@@ -181,12 +181,36 @@ def _build_graph(checkpointer: AsyncSqliteSaver, deps: GraphDeps):
         )
         return {"decisions": cast(dict[str, Any], decisions)}
 
-    async def execute(state: BeaconState) -> dict[str, Any]:
-        await deps.emitter.emit("node_started", "Applying the capability and approval boundary.", node="execute")
+    async def execute_phase(
+        state: BeaconState,
+        *,
+        automatic: bool,
+    ) -> dict[str, Any]:
+        node = "execute_automatic" if automatic else "execute"
+        message = (
+            "Executing eligible automatic actions before approval waits."
+            if automatic
+            else "Applying the capability and approval boundary."
+        )
+        await deps.emitter.emit("node_started", message, node=node)
         decision_rows = state.get("decisions", {}).get("actions", [])
         statuses = {row.get("idempotencyKey"): row.get("status") for row in decision_rows if isinstance(row, dict)}
-        executions: list[dict[str, Any]] = []
+        executions = list(state.get("executions", []))
+        processed = 0
         for action in state["actions"]:
+            is_automatic = action["risk"] == "automatic"
+            if is_automatic != automatic:
+                continue
+            processed += 1
+            if action["risk"] == "manual":
+                executions.append(
+                    {
+                        "idempotencyKey": action["idempotencyKey"],
+                        "status": "manual_required",
+                        "reason": "Policy requires an operator.",
+                    }
+                )
+                continue
             status = statuses.get(action["idempotencyKey"])
             if action["risk"] == "approval_required" and status == "rejected":
                 executions.append(
@@ -208,7 +232,7 @@ def _build_graph(checkpointer: AsyncSqliteSaver, deps: GraphDeps):
             await deps.emitter.emit(
                 "action_result",
                 f"{action['actionType']}: {result['status']}",
-                node="execute",
+                node=node,
                 data={
                     "idempotencyKey": action["idempotencyKey"],
                     "status": result["status"],
@@ -218,10 +242,16 @@ def _build_graph(checkpointer: AsyncSqliteSaver, deps: GraphDeps):
             )
         await deps.emitter.emit(
             "node_completed",
-            f"Processed {len(executions)} policy-scoped actions.",
-            node="execute",
+            f"Processed {processed} policy-scoped actions.",
+            node=node,
         )
         return {"executions": executions}
+
+    async def execute_automatic(state: BeaconState) -> dict[str, Any]:
+        return await execute_phase(state, automatic=True)
+
+    async def execute(state: BeaconState) -> dict[str, Any]:
+        return await execute_phase(state, automatic=False)
 
     async def report(state: BeaconState) -> dict[str, Any]:
         summary = {
@@ -239,6 +269,7 @@ def _build_graph(checkpointer: AsyncSqliteSaver, deps: GraphDeps):
     builder.add_node("audit", audit)
     builder.add_node("analyze", analyze)
     builder.add_node("plan", plan)
+    builder.add_node("execute_automatic", execute_automatic)
     builder.add_node("approval", approval)
     builder.add_node("execute", execute)
     builder.add_node("report", report)
@@ -246,7 +277,12 @@ def _build_graph(checkpointer: AsyncSqliteSaver, deps: GraphDeps):
     builder.add_edge("collect", "audit")
     builder.add_edge("audit", "analyze")
     builder.add_edge("analyze", "plan")
-    builder.add_conditional_edges("plan", route_after_plan, {"approval": "approval", "execute": "execute"})
+    builder.add_edge("plan", "execute_automatic")
+    builder.add_conditional_edges(
+        "execute_automatic",
+        route_after_automatic,
+        {"approval": "approval", "execute": "execute"},
+    )
     builder.add_edge("approval", "execute")
     builder.add_edge("execute", "report")
     builder.add_edge("report", END)

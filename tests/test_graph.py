@@ -21,7 +21,12 @@ class RecordingBeacon:
         self.events.extend(events)
 
 
-def _lease(*, actions: list[RunAction] | None = None, events: list[ExistingEvent] | None = None) -> BeaconLease:
+def _lease(
+    *,
+    actions: list[RunAction] | None = None,
+    events: list[ExistingEvent] | None = None,
+    scopes: list[str] | None = None,
+) -> BeaconLease:
     return BeaconLease.model_validate(
         {
             "run": {
@@ -29,7 +34,7 @@ def _lease(*, actions: list[RunAction] | None = None, events: list[ExistingEvent
                 "projectId": "project-1",
                 "threadId": "thread-graph",
                 "mode": "optimize",
-                "scopes": ["x402"],
+                "scopes": scopes or ["x402"],
                 "status": "leased",
                 "events": [event.model_dump(mode="json") for event in events or []],
                 "actions": [action.model_dump(by_alias=True, mode="json") for action in actions or []],
@@ -124,3 +129,55 @@ async def test_graph_checkpoints_at_approval_and_resumes_same_thread(tmp_path: P
         assert checkpoint_db.execute(
             "SELECT count(*) FROM writes WHERE thread_id = ?", ("thread-graph",)
         ).fetchone() == (0,)
+
+
+async def test_graph_executes_automatic_actions_before_approval_interrupt(tmp_path: Path) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.host == "api.indexnow.org":
+            return httpx.Response(200)
+        if request.url.path == "/sitemap.xml":
+            return httpx.Response(
+                200,
+                text=(
+                    '<?xml version="1.0"?>'
+                    '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">'
+                    "<url><loc>https://site.example/</loc></url>"
+                    "</urlset>"
+                ),
+            )
+        if request.url.path == "/":
+            return httpx.Response(200, text="<html><title>Hyrule</title></html>")
+        return httpx.Response(200, text="ok")
+
+    settings = Settings(
+        data_dir=str(tmp_path),
+        site_base_url="https://site.example",
+        indexnow_key="k" * 32,
+        beacon_execute_automatic_actions=True,
+    )
+    store = Store(tmp_path / "seo.db")
+    await store.connect()
+    await store.set_kv("sitemap_sha256", "previous-sitemap")
+    recorder = RecordingBeacon()
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        outcome = await run_graph(
+            lease=_lease(scopes=["http"]),
+            beacon=recorder,
+            settings=settings,
+            store=store,
+            http=http,
+        )
+    await store.close()
+
+    assert outcome.awaiting_approval is True
+    automatic = next(
+        event for event in recorder.events if event.type == "action_proposed" and event.data["risk"] == "automatic"
+    )
+    result_index = next(
+        index
+        for index, event in enumerate(recorder.events)
+        if event.type == "action_result" and event.data["idempotencyKey"] == automatic.data["idempotencyKey"]
+    )
+    approval_index = next(index for index, event in enumerate(recorder.events) if event.type == "awaiting_approval")
+    assert result_index < approval_index
+    assert recorder.events[result_index].data["status"] == "succeeded"

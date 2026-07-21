@@ -180,31 +180,43 @@ def plan_actions(
             )
         )
 
+    manual_evidence_actions: dict[str, tuple[str, str, dict[str, Any]]] = {
+        "distribution.community.outreach_needed": (
+            "x402_foundation",
+            "community.outreach",
+            {
+                "channel": "x402 Foundation",
+                "deliverable": "Hyrule demo and evidence pack",
+            },
+        ),
+        "distribution.import_verification_needed": (
+            "ampersend",
+            "account.verify_import",
+            {
+                "channel": "Ampersend",
+                "question": "Was Hyrule imported from CDP Bazaar?",
+            },
+        ),
+    }
     if "distribution" in scopes:
-        actions.extend(
-            [
+        for code in sorted(codes):
+            manual_definition = manual_evidence_actions.get(code)
+            if manual_definition is None:
+                continue
+            channel_key, action_type, payload = manual_definition
+            actions.append(
                 _proposal(
                     run_id,
-                    "community.outreach",
+                    action_type,
                     "manual",
-                    {
-                        "channel": "x402 Foundation",
-                        "deliverable": "Hyrule demo and evidence pack",
+                    payload,
+                    channel_key=channel_key,
+                    validation={
+                        "source": "new_distribution_evidence",
+                        "findingCode": code,
                     },
-                    channel_key="x402_foundation",
-                ),
-                _proposal(
-                    run_id,
-                    "account.verify_import",
-                    "manual",
-                    {
-                        "channel": "Ampersend",
-                        "question": "Was Hyrule imported from CDP Bazaar?",
-                    },
-                    channel_key="ampersend",
-                ),
-            ]
-        )
+                )
+            )
     return actions
 
 

@@ -40,6 +40,34 @@ def test_optimize_policy_separates_automatic_approval_and_manual_work() -> None:
     assert all(action["idempotencyKey"].startswith("run-1:") for action in actions)
 
 
+def test_recurring_manual_handoffs_require_new_evidence() -> None:
+    without_evidence = plan_actions(
+        run_id="run-1",
+        mode="optimize",
+        scopes=["distribution"],
+        findings=[],
+        observations=[],
+        evidence={},
+    )
+    with_evidence = plan_actions(
+        run_id="run-2",
+        mode="optimize",
+        scopes=["distribution"],
+        findings=[
+            {"code": "distribution.community.outreach_needed"},
+            {"code": "distribution.import_verification_needed"},
+        ],
+        observations=[],
+        evidence={},
+    )
+
+    assert without_evidence == []
+    assert {action["actionType"] for action in with_evidence} == {
+        "community.outreach",
+        "account.verify_import",
+    }
+
+
 async def test_executor_never_treats_approval_as_new_capability(tmp_path, monkeypatch) -> None:
     store = Store(tmp_path / "seo.db")
     await store.connect()

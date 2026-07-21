@@ -327,12 +327,12 @@ def _html_listing(text: str, base_url: str, markers: tuple[str, ...]) -> tuple[b
 def _listing_result(
     resource: dict[str, Any], spec: dict[str, Any], markers: tuple[str, ...]
 ) -> tuple[bool | None, str | None]:
+    if resource.get("truncated"):
+        return None, None
     text = str(resource.get("text", ""))
     url = str(resource.get("url", ""))
     result_kind = spec.get("result_kind", "html")
     if result_kind == "json":
-        if resource.get("truncated"):
-            return None, None
         present, result_url = _json_listing(text, markers)
         return present, result_url or (url if present else None)
     if result_kind == "direct":
@@ -374,7 +374,7 @@ def _audit_distribution(evidence: dict[str, Any]) -> tuple[list[dict[str, Any]],
                 _finding(
                     "distribution.measurement.unavailable",
                     f"Could not measure {spec['name']}",
-                    "The JSON channel response was malformed or truncated; "
+                    "The channel response was malformed or truncated; "
                     "this remains unknown and is not counted as absent.",
                     severity="info",
                     channel_key=key,

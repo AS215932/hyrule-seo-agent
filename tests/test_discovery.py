@@ -63,6 +63,34 @@ def test_malformed_or_truncated_json_channel_is_unknown() -> None:
         assert result["findings"][0]["code"] == "distribution.measurement.unavailable"
 
 
+def test_every_truncated_channel_kind_is_unknown() -> None:
+    for result_kind in ("html", "direct", "document"):
+        evidence = {
+            "surfaces": {},
+            "channels": {
+                "catalog": {
+                    **_resource(200, "unrelated result before the cutoff"),
+                    "truncated": True,
+                }
+            },
+            "channel_specs": [
+                {
+                    "key": "catalog",
+                    "name": "Catalog",
+                    "priority": "high",
+                    "measurement": "presence",
+                    "result_kind": result_kind,
+                }
+            ],
+            "markers": ["hyrule"],
+        }
+
+        result = audit_evidence(evidence, ["distribution"])
+
+        assert result["observations"] == []
+        assert [finding["code"] for finding in result["findings"]] == ["distribution.measurement.unavailable"]
+
+
 def test_public_listing_presence_is_measured_without_inventing_rank() -> None:
     evidence = {
         "surfaces": {},
