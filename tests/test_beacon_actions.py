@@ -8,6 +8,9 @@ from app.config import Settings
 from app.store import Store
 
 
+VALID_SITEMAP = "<urlset><url><loc>https://hyrule.host/</loc></url></urlset>"
+
+
 def test_measure_mode_never_proposes_mutations() -> None:
     actions = plan_actions(
         run_id="run-1",
@@ -30,7 +33,7 @@ def test_optimize_policy_separates_automatic_approval_and_manual_work() -> None:
             {"channelKey": "x402_list", "present": False},
             {"channelKey": "a2alist", "present": False},
         ],
-        evidence={"surfaces": {"http:sitemap": {"status": 200, "sha256": "abc"}}},
+        evidence={"surfaces": {"http:sitemap": {"status": 200, "sha256": "abc", "text": VALID_SITEMAP}}},
     )
     risks = {(action["actionType"], action["risk"]) for action in actions}
     assert ("indexnow.submit", "automatic") in risks
@@ -38,6 +41,22 @@ def test_optimize_policy_separates_automatic_approval_and_manual_work() -> None:
     assert ("registry.create_listing", "approval_required") in risks
     assert ("registry.paid_form", "manual") in risks
     assert all(action["idempotencyKey"].startswith("run-1:") for action in actions)
+
+
+def test_unavailable_partial_measurements_do_not_propose_repairs() -> None:
+    actions = plan_actions(
+        run_id="run-unknown",
+        mode="optimize",
+        scopes=["http"],
+        findings=[
+            {"code": "http.structured_data.unavailable"},
+            {"code": "http.sitemap.validation_unavailable"},
+        ],
+        observations=[],
+        evidence={"surfaces": {}},
+    )
+
+    assert actions == []
 
 
 def test_recurring_manual_handoffs_require_new_evidence() -> None:

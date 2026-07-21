@@ -198,3 +198,48 @@ async def test_graph_executes_automatic_actions_before_approval_interrupt(tmp_pa
     approval_index = next(index for index, event in enumerate(recorder.events) if event.type == "awaiting_approval")
     assert result_index < approval_index
     assert recorder.events[result_index].data["status"] == "succeeded"
+
+
+async def test_graph_emits_manual_action_handoff_result(tmp_path: Path, monkeypatch) -> None:
+    async def collected(_http, _settings, _scopes):
+        return {
+            "surfaces": {},
+            "channels": {
+                "a2alist": {
+                    "status": 200,
+                    "text": "No matching agents",
+                    "url": "https://a2alist.ai/",
+                    "observed_at": "2026-07-21T12:00:00+00:00",
+                }
+            },
+            "channel_specs": [
+                {
+                    "key": "a2alist",
+                    "name": "a2alist",
+                    "priority": "secondary",
+                    "measurement": "presence",
+                    "result_kind": "html",
+                }
+            ],
+            "markers": ["hyrule"],
+        }
+
+    monkeypatch.setattr("app.graph.collect_evidence", collected)
+    settings = Settings(data_dir=str(tmp_path))
+    store = Store(tmp_path / "seo.db")
+    await store.connect()
+    recorder = RecordingBeacon()
+    async with httpx.AsyncClient() as http:
+        outcome = await run_graph(
+            lease=_lease(scopes=["distribution"]),
+            beacon=recorder,
+            settings=settings,
+            store=store,
+            http=http,
+        )
+    await store.close()
+
+    assert outcome.awaiting_approval is False
+    result = next(event for event in recorder.events if event.type == "action_result")
+    assert result.data["status"] == "manual_required"
+    assert result.data["errorMessage"] == "Policy requires an operator."

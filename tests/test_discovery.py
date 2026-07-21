@@ -197,10 +197,16 @@ def test_empty_manifest_is_catalog_drift_when_openapi_has_paid_operations() -> N
 
 
 def test_json_ld_requires_a_valid_script_element() -> None:
+    sitemap = (
+        '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">'
+        "<url><loc>https://example.test/</loc></url>"
+        "</urlset>"
+    )
     base = {
         "http:robots": _resource(200),
-        "http:sitemap": _resource(200),
+        "http:sitemap": _resource(200, sitemap),
         "http:llms": _resource(200),
+        "http:tools": _resource(200),
     }
     false_positive = audit_evidence(
         {
@@ -230,6 +236,83 @@ def test_json_ld_requires_a_valid_script_element() -> None:
 
     assert "http.structured_data.missing" in {finding["code"] for finding in false_positive["findings"]}
     assert "http.structured_data.missing" not in {finding["code"] for finding in valid["findings"]}
+
+
+def test_truncated_homepage_keeps_structured_data_unknown() -> None:
+    result = audit_evidence(
+        {
+            "surfaces": {
+                "http:home": {**_resource(200, "<html>partial"), "truncated": True},
+                "http:robots": _resource(200),
+                "http:sitemap": _resource(
+                    200,
+                    "<urlset><url><loc>https://example.test/</loc></url></urlset>",
+                ),
+                "http:llms": _resource(200),
+                "http:tools": _resource(200),
+            }
+        },
+        ["http"],
+    )
+
+    codes = {finding["code"] for finding in result["findings"]}
+    assert "http.structured_data.unavailable" in codes
+    assert "http.structured_data.missing" not in codes
+
+
+def test_tool_index_reports_every_non_200_response() -> None:
+    for status, expected in (
+        (0, "http.tools_index.unavailable"),
+        (403, "http.tools_index.unavailable"),
+        (503, "http.tools_index.unavailable"),
+        (404, "http.tools_index.missing"),
+    ):
+        result = audit_evidence(
+            {
+                "surfaces": {
+                    "http:home": _resource(
+                        200,
+                        '<script type="application/ld+json">{"@type":"Organization"}</script>',
+                    ),
+                    "http:robots": _resource(200),
+                    "http:sitemap": _resource(
+                        200,
+                        "<urlset><url><loc>https://example.test/</loc></url></urlset>",
+                    ),
+                    "http:llms": _resource(200),
+                    "http:tools": _resource(status),
+                }
+            },
+            ["http"],
+        )
+
+        assert expected in {finding["code"] for finding in result["findings"]}
+
+
+def test_sitemap_requires_valid_xml_with_a_usable_url() -> None:
+    for sitemap in (
+        "<html><body>upstream error</body></html>",
+        "<urlset>",
+        "<urlset></urlset>",
+        "<urlset><url><loc>/relative</loc></url></urlset>",
+    ):
+        result = audit_evidence(
+            {
+                "surfaces": {
+                    "http:home": _resource(
+                        200,
+                        '<script type="application/ld+json">{"@type":"Organization"}</script>',
+                    ),
+                    "http:robots": _resource(200),
+                    "http:sitemap": _resource(200, sitemap),
+                    "http:llms": _resource(200),
+                    "http:tools": _resource(200),
+                }
+            },
+            ["http"],
+        )
+
+        assert "http.sitemap.invalid" in {finding["code"] for finding in result["findings"]}
 
 
 class _CountingStream(httpx.AsyncByteStream):

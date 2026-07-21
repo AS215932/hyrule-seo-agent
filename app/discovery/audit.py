@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import xml.etree.ElementTree as ET
 from collections.abc import Iterator
 from datetime import UTC, datetime
 from html.parser import HTMLParser
@@ -68,24 +69,62 @@ def _audit_http(surfaces: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
                     evidence_r2_key=_evidence_key(resource),
                 )
             )
+    sitemap = surfaces.get("http:sitemap", {})
+    if sitemap.get("status") == 200:
+        if sitemap.get("truncated"):
+            findings.append(
+                _finding(
+                    "http.sitemap.validation_unavailable",
+                    "Sitemap validation is unavailable",
+                    "The sitemap exceeded the evidence limit, so its XML and URL entries could not be validated.",
+                    severity="info",
+                    evidence_r2_key=_evidence_key(sitemap),
+                )
+            )
+        elif not has_usable_sitemap(str(sitemap.get("text", ""))):
+            findings.append(
+                _finding(
+                    "http.sitemap.invalid",
+                    "Sitemap is not usable",
+                    "Publish a valid sitemap XML document with at least one absolute HTTP(S) URL entry.",
+                    evidence_r2_key=_evidence_key(sitemap),
+                )
+            )
+
     home = surfaces.get("http:home", {})
     home_text = str(home.get("text", ""))
-    if home.get("status") == 200 and not _has_valid_json_ld(home_text):
-        findings.append(
-            _finding(
-                "http.structured_data.missing",
-                "Homepage has no JSON-LD",
-                "Expose Organization, WebSite, and relevant SoftwareApplication or Service schema.",
-                evidence_r2_key=_evidence_key(home),
+    if home.get("status") == 200:
+        if home.get("truncated"):
+            findings.append(
+                _finding(
+                    "http.structured_data.unavailable",
+                    "Homepage structured data could not be measured",
+                    "The homepage exceeded the evidence limit, so JSON-LD beyond the cutoff remains unknown.",
+                    severity="info",
+                    evidence_r2_key=_evidence_key(home),
+                )
             )
-        )
+        elif not _has_valid_json_ld(home_text):
+            findings.append(
+                _finding(
+                    "http.structured_data.missing",
+                    "Homepage has no JSON-LD",
+                    "Expose Organization, WebSite, and relevant SoftwareApplication or Service schema.",
+                    evidence_r2_key=_evidence_key(home),
+                )
+            )
     tools = surfaces.get("http:tools")
-    if tools and tools.get("status") == 404:
+    if not tools or tools.get("status") != 200:
+        missing = bool(tools and tools.get("status") == 404)
         findings.append(
             _finding(
-                "http.tools_index.missing",
-                "Curated tool index is missing",
-                "Publish a curated /tools index with unique intent-led pages for the strongest Hyrule capabilities.",
+                "http.tools_index.missing" if missing else "http.tools_index.unavailable",
+                "Curated tool index is missing" if missing else "Curated tool index is unavailable",
+                (
+                    "Publish a curated /tools index with unique intent-led pages for the strongest Hyrule capabilities."
+                    if missing
+                    else "Expected a 200 response for /tools; restore the public tool-index surface before measuring it."
+                ),
                 evidence_r2_key=_evidence_key(tools),
             )
         )
@@ -327,6 +366,33 @@ def _has_valid_json_ld(text: str) -> bool:
     parser = _JsonLdParser()
     parser.feed(text)
     return parser.valid_document
+
+
+def has_usable_sitemap(text: str) -> bool:
+    """Return whether sitemap XML contains at least one usable URL entry."""
+
+    try:
+        root = ET.fromstring(text)
+    except ET.ParseError, TypeError, RecursionError:
+        return False
+    root_name = root.tag.rsplit("}", 1)[-1] if isinstance(root.tag, str) else ""
+    entry_name = {"urlset": "url", "sitemapindex": "sitemap"}.get(root_name)
+    if entry_name is None:
+        return False
+    for entry in root:
+        if not isinstance(entry.tag, str) or entry.tag.rsplit("}", 1)[-1] != entry_name:
+            continue
+        for child in entry:
+            if not isinstance(child.tag, str) or child.tag.rsplit("}", 1)[-1] != "loc":
+                continue
+            candidate = (child.text or "").strip()
+            try:
+                parsed = urlsplit(candidate)
+            except ValueError:
+                continue
+            if parsed.scheme in {"http", "https"} and parsed.hostname:
+                return True
+    return False
 
 
 def _html_listing(text: str, base_url: str, markers: tuple[str, ...]) -> tuple[bool, str | None]:

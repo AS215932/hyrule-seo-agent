@@ -11,6 +11,7 @@ import httpx
 from app.actions import indexnow
 from app.beacon.models import ActionProposal, ActionRisk
 from app.config import Settings
+from app.discovery.audit import has_usable_sitemap
 from app.store import Store
 
 
@@ -59,9 +60,20 @@ def plan_actions(
         if observation.get("present") is False and isinstance(observation.get("channelKey"), str)
     }
 
-    if "http" in scopes and any(code.startswith("http.") for code in codes):
+    non_actionable_http_codes = {
+        "http.sitemap.validation_unavailable",
+        "http.structured_data.unavailable",
+    }
+    actionable_http_codes = {
+        code for code in codes if code.startswith("http.") and code not in non_actionable_http_codes
+    }
+    if "http" in scopes and actionable_http_codes:
         sitemap = evidence.get("surfaces", {}).get("http:sitemap", {})
-        if sitemap.get("status") == 200:
+        if (
+            sitemap.get("status") == 200
+            and not sitemap.get("truncated")
+            and has_usable_sitemap(str(sitemap.get("text", "")))
+        ):
             actions.append(
                 _proposal(
                     run_id,
@@ -86,7 +98,7 @@ def plan_actions(
                 {
                     "repository": "AS215932/hyrule-web",
                     "surface": "http",
-                    "findingCodes": sorted(code for code in codes if code.startswith("http.")),
+                    "findingCodes": sorted(actionable_http_codes),
                     "workflow": "prepare_reviewable_patch",
                 },
                 validation={

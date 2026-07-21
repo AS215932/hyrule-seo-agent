@@ -233,12 +233,22 @@ def _build_graph(checkpointer: AsyncSqliteSaver, deps: GraphDeps):
                 continue
             processed += 1
             if action["risk"] == "manual":
-                executions.append(
-                    {
+                execution = {
+                    "idempotencyKey": action["idempotencyKey"],
+                    "status": "manual_required",
+                    "reason": "Policy requires an operator.",
+                }
+                executions.append(execution)
+                await deps.emitter.emit(
+                    "action_result",
+                    f"{action['actionType']}: manual_required",
+                    node=node,
+                    data={
                         "idempotencyKey": action["idempotencyKey"],
                         "status": "manual_required",
-                        "reason": "Policy requires an operator.",
-                    }
+                        "result": {},
+                        "errorMessage": execution["reason"],
+                    },
                 )
                 continue
             status = statuses.get(action["idempotencyKey"])
