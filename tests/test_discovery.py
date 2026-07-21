@@ -288,6 +288,21 @@ def test_manifest_rejects_non_array_catalog_shapes() -> None:
         assert "x402.manifest.invalid" in {finding["code"] for finding in result["findings"]}
 
 
+def test_manifest_rejects_entries_without_invocable_operations() -> None:
+    for resource in ({}, {"method": "GET"}, "not-an-object"):
+        result = audit_evidence(
+            {
+                "surfaces": {
+                    "x402:openapi": _resource(200, '{"paths":{}}'),
+                    "x402:manifest": _resource(200, json.dumps({"x402Version": 2, "resources": [resource]})),
+                    "x402:health": _resource(200),
+                }
+            },
+            ["x402"],
+        )
+        assert "x402.manifest.invalid" in {finding["code"] for finding in result["findings"]}
+
+
 def test_malformed_catalog_urls_are_reported_instead_of_crashing() -> None:
     cases = (
         (

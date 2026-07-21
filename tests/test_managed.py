@@ -175,6 +175,36 @@ async def test_completion_failure_retains_the_terminal_checkpoint(worker_deps, m
     assert "control plane unavailable" in (worker.last_error or "")
 
 
+async def test_checkpoint_cleanup_is_persisted_and_retried_before_leasing(worker_deps, monkeypatch) -> None:
+    settings, store, http = worker_deps
+    worker = ManagedWorker(settings=settings, store=store, http=http)
+    fake = FakeClient(_lease())
+    worker._client = fake
+    attempts = 0
+
+    async def success(**kwargs):
+        return GraphOutcome(state={"findings": [], "executions": []}, awaiting_approval=False)
+
+    async def flaky_delete(settings, thread_id):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise OSError("transient cleanup failure")
+
+    monkeypatch.setattr(managed_module, "run_graph", success)
+    monkeypatch.setattr(managed_module, "delete_graph_checkpoint", flaky_delete)
+
+    first = await worker.run_once()
+    assert first.ok is False
+    assert await store.get_kv(managed_module._PENDING_CLEANUP_KEY) == '["thread-1"]'
+
+    fake.next_lease = None
+    second = await worker.run_once()
+    assert second.ok is True
+    assert attempts == 2
+    assert await store.get_kv(managed_module._PENDING_CLEANUP_KEY) == "[]"
+
+
 async def test_renewal_failure_cancels_the_active_graph(worker_deps, monkeypatch) -> None:
     settings, store, http = worker_deps
     worker = ManagedWorker(settings=settings, store=store, http=http)

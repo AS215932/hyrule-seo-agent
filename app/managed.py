@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 from dataclasses import dataclass
+import json
 import httpx
 import structlog
 
@@ -15,6 +16,7 @@ from app.graph import GraphOutcome, delete_graph_checkpoint, run_graph
 from app.store import Store
 
 log = structlog.get_logger()
+_PENDING_CLEANUP_KEY = "beacon_pending_checkpoint_cleanup"
 
 
 @dataclass(frozen=True, slots=True)
@@ -55,6 +57,8 @@ class ManagedWorker:
         self._task = None
 
     async def run_once(self) -> ManagedRunResult:
+        if not await self._retry_pending_cleanups():
+            return ManagedRunResult(leased=False, ok=False, error=self.last_error)
         lease = await self._client.lease()
         if lease is None:
             return ManagedRunResult(leased=False, ok=True)
@@ -161,9 +165,42 @@ class ManagedWorker:
         try:
             await delete_graph_checkpoint(self._settings, lease.run.thread_id)
         except Exception as exc:
+            await self._remember_pending_cleanup(lease.run.thread_id)
             self.last_error = f"{type(exc).__name__}: {str(exc)[:500]}"
             log.exception("beacon_checkpoint_cleanup_failed", run_id=lease.run.id)
             return False
+        await self._forget_pending_cleanup(lease.run.thread_id)
+        return True
+
+    async def _pending_cleanups(self) -> list[str]:
+        raw = await self._store.get_kv(_PENDING_CLEANUP_KEY)
+        if not raw:
+            return []
+        try:
+            value = json.loads(raw)
+        except json.JSONDecodeError, TypeError:
+            return []
+        return [item for item in value if isinstance(item, str)] if isinstance(value, list) else []
+
+    async def _remember_pending_cleanup(self, thread_id: str) -> None:
+        pending = set(await self._pending_cleanups())
+        pending.add(thread_id)
+        await self._store.set_kv(_PENDING_CLEANUP_KEY, json.dumps(sorted(pending)))
+
+    async def _forget_pending_cleanup(self, thread_id: str) -> None:
+        pending = set(await self._pending_cleanups())
+        pending.discard(thread_id)
+        await self._store.set_kv(_PENDING_CLEANUP_KEY, json.dumps(sorted(pending)))
+
+    async def _retry_pending_cleanups(self) -> bool:
+        for thread_id in await self._pending_cleanups():
+            try:
+                await delete_graph_checkpoint(self._settings, thread_id)
+            except Exception as exc:
+                self.last_error = f"{type(exc).__name__}: {str(exc)[:500]}"
+                log.exception("beacon_checkpoint_cleanup_retry_failed", thread_id=thread_id)
+                return False
+            await self._forget_pending_cleanup(thread_id)
         return True
 
     @staticmethod

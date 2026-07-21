@@ -154,14 +154,15 @@ def _manifest_operations(candidates: list[Any]) -> set[tuple[str, str]] | None:
     operations: set[tuple[str, str]] = set()
     for item in candidates:
         if not isinstance(item, dict):
-            continue
+            return None
         method = item.get("method")
         path = item.get("path") or item.get("resource") or item.get("url")
-        if isinstance(method, str) and isinstance(path, str):
-            normalized = _normalized_path(path)
-            if normalized is None:
-                return None
-            operations.add((method.upper(), normalized))
+        if not isinstance(method, str) or not method.strip() or not isinstance(path, str):
+            return None
+        normalized = _normalized_path(path)
+        if normalized is None:
+            return None
+        operations.add((method.upper(), normalized))
     return operations
 
 
