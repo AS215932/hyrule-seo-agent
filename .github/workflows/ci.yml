@@ -35,6 +35,12 @@ jobs:
             uv-${{ runner.os }}-
 
       - name: Sync deps
+        env:
+          # The public PR runner occasionally sees short PyPI connect stalls.
+          # Keep dependency bootstrap bounded but resilient enough to ride
+          # them out.
+          UV_HTTP_CONNECT_TIMEOUT: "60"
+          UV_HTTP_RETRIES: "10"
         run: ~/.local/bin/uv sync --frozen --group dev
 
       - name: Ruff
