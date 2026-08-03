@@ -15,10 +15,16 @@ concurrency:
 jobs:
   test:
     name: test
-    runs-on: [self-hosted, linux, x64, hyrule-public-pr]
+    # This public, secret-free job uses GitHub-hosted egress so dependency
+    # bootstrap is not coupled to the public PR runner's intermittent PyPI path.
+    runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.14"
 
       - name: Install uv
         run: |
