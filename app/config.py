@@ -20,6 +20,11 @@ class Settings(BaseSettings):
     # Site under management. The crawler is hard-limited to this origin.
     site_base_url: str = "https://hyrule.host"
 
+    # The paid-API origin whose discovery manifests (x402/agent-card/openapi)
+    # the surface phase audits with fetch-only GETs — never crawled. Empty →
+    # the cloud-side checks are off.
+    api_base_url: str = "https://cloud.hyrule.host"
+
     # Writable state root: SQLite db + the hyrule-web workspace checkout.
     data_dir: str = "/var/lib/seo-agent"
 
@@ -33,6 +38,7 @@ class Settings(BaseSettings):
     indexnow_interval_s: int = 21600
     draft_interval_s: int = 604800
     report_interval_s: int = 604800
+    surface_interval_s: int = 21600
 
     # Crawler caps — this is our own site; stay polite anyway.
     crawl_max_pages: int = 60
@@ -57,6 +63,15 @@ class Settings(BaseSettings):
     # IndexNow: must equal hyrule-web's HYRULE_WEB_INDEXNOW_KEY so the
     # published key file at /indexnow.txt validates our pings. Empty → off.
     indexnow_key: str = ""
+
+    # x402 Bazaar discovery endpoint used to verify our resources are indexed
+    # (e.g. https://api.cdp.coinbase.com/platform/v2/x402/discovery/resources).
+    # Empty → the listing check and metric are off.
+    bazaar_discovery_url: str = ""
+
+    # AI crawlers that must stay allowed in robots.txt; blocking one of these
+    # silently removes the site from that assistant's grounding.
+    agent_bots: str = "ClaudeBot,GPTBot,PerplexityBot,OAI-SearchBot,Google-Extended"
 
     # LLM drafting via OpenRouter (model ids in config/seo-agent.toml).
     openrouter_api_key: str = ""
@@ -87,7 +102,7 @@ class Settings(BaseSettings):
 
     model_config = {"env_prefix": "SEO_AGENT_"}
 
-    @field_validator("site_base_url", "umami_base_url")
+    @field_validator("site_base_url", "api_base_url", "umami_base_url")
     @classmethod
     def _strip_trailing_slash(cls, v: str) -> str:
         return v.rstrip("/")
@@ -95,6 +110,10 @@ class Settings(BaseSettings):
     @property
     def psi_path_list(self) -> list[str]:
         return [p.strip() for p in self.psi_paths.split(",") if p.strip()]
+
+    @property
+    def agent_bot_list(self) -> list[str]:
+        return [b.strip() for b in self.agent_bots.split(",") if b.strip()]
 
     @property
     def allowed_edit_path_list(self) -> list[str]:

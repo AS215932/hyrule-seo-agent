@@ -34,10 +34,11 @@ async def deps(tmp_path: Path):
 
 def test_jobs_table_matches_settings(deps: Deps) -> None:
     jobs = Scheduler(deps).jobs()
-    assert [j[0] for j in jobs] == ["audit", "metrics", "indexnow", "draft", "report"]
+    assert [j[0] for j in jobs] == ["audit", "surface", "metrics", "indexnow", "draft", "report"]
     audit = jobs[0]
     assert audit[2] == 0 and audit[3] == 0  # interval 0 → immediate start
-    assert jobs[1][3] == 60  # delay bounded by min(base, interval)
+    assert jobs[1][3] == 30  # surface delay bounded by min(base, interval)
+    assert jobs[2][3] == 60  # metrics delay likewise
 
 
 async def test_scheduler_runs_cycles_and_survives_failures(deps: Deps, monkeypatch) -> None:

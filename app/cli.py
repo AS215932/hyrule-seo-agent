@@ -14,12 +14,13 @@ from pathlib import Path
 import httpx
 
 from app.config import settings
-from app.pipeline import Deps, run_audit, run_draft, run_indexnow, run_metrics, run_report
+from app.pipeline import Deps, run_audit, run_draft, run_indexnow, run_metrics, run_report, run_surface
 from app.report import build_summary
 from app.store import Store
 
 _PHASES = {
     "run-audit": run_audit,
+    "run-surface": run_surface,
     "run-metrics": run_metrics,
     "indexnow": run_indexnow,
     "draft": run_draft,

@@ -9,8 +9,10 @@ ranked findings into **human-reviewed draft PRs** against
 ## Shape
 
 - FastAPI on `:8790` (`/health`, `/metrics`) with an in-process asyncio
-  scheduler: crawl+audit daily, GSC/PSI/Umami daily, IndexNow check 6-hourly,
-  draft weekly, Discord report weekly.
+  scheduler: crawl+audit daily, agent-surface sweep 6-hourly (llms.txt, x402
+  manifest, agent card, OpenAPI, Bazaar indexing, AI-crawler robots — both
+  hyrule.host and cloud.hyrule.host), GSC/PSI/Umami daily, IndexNow check
+  6-hourly, draft weekly, Discord report weekly.
 - State in SQLite under `SEO_AGENT_DATA_DIR` (findings, metric samples, run
   log, PR ledger, sitemap hash).
 - agent-core `TraceEvent`s (graph_id `seo-agent`) to the loop collector —

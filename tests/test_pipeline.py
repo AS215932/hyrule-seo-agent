@@ -11,7 +11,15 @@ import respx
 import app.pipeline as pipeline
 from app.actions import github, indexnow, workspace
 from app.config import Settings
-from app.models import CrawlResult, DraftEdit, DraftProposal, Finding, MetricSample
+from app.models import (
+    CrawlResult,
+    DraftEdit,
+    DraftProposal,
+    FetchedDoc,
+    Finding,
+    MetricSample,
+    SurfaceSnapshot,
+)
 from app.store import Store
 
 
@@ -341,3 +349,79 @@ async def test_run_report_sends(deps, monkeypatch) -> None:
         router.post("https://discord.test/hook").respond(204)
         outcome = await pipeline.run_report(deps)
     assert outcome.stats["sent"] is True
+
+
+async def test_run_surface_persists_findings_and_isolates_sources(deps, monkeypatch) -> None:
+    async def fake_fetch(client, **kwargs):
+        return SurfaceSnapshot()
+
+    surface_finding = Finding(
+        check="llms_txt", severity="error", message="m",
+        url="https://hyrule.host/llms.txt", source="surface",
+    )
+    monkeypatch.setattr(pipeline, "fetch_surface", fake_fetch)
+    monkeypatch.setattr(pipeline, "audit_surface", lambda snapshot, **kw: [surface_finding])
+    outcome = await pipeline.run_surface(deps)
+    assert outcome.ok
+    assert outcome.stats["new"] == 1
+    assert (await deps.store.last_runs(1))[0]["kind"] == "surface"
+
+    # An audit run with zero findings must not resolve the surface finding —
+    # resolve_stale is per-source, which is why "surface" is its own Source.
+    async def fake_crawl(client, base_url, **kwargs):
+        return CrawlResult(base_url="https://hyrule.host")
+
+    monkeypatch.setattr(pipeline, "crawl_site", fake_crawl)
+    monkeypatch.setattr(pipeline, "audit_crawl", lambda c, site_base_url: [])
+    await pipeline.run_audit(deps)
+    assert len(await deps.store.active_findings()) == 1
+
+    # A surface run without the finding resolves it.
+    monkeypatch.setattr(pipeline, "audit_surface", lambda snapshot, **kw: [])
+    outcome = await pipeline.run_surface(deps)
+    assert outcome.stats["resolved"] == 1
+
+
+async def test_run_surface_records_bazaar_metric(deps, monkeypatch) -> None:
+    listed = SurfaceSnapshot(
+        bazaar=FetchedDoc(
+            url="https://bazaar.test/resources",
+            status_code=200,
+            json_body={"items": [{"resource": "https://cloud.hyrule.host/v1/dns/lookup"}]},
+        )
+    )
+
+    async def fake_fetch(client, **kwargs):
+        return listed
+
+    monkeypatch.setattr(pipeline, "fetch_surface", fake_fetch)
+    monkeypatch.setattr(pipeline, "audit_surface", lambda snapshot, **kw: [])
+    outcome = await pipeline.run_surface(deps)
+    assert outcome.stats["bazaar_indexed"] == 1
+    assert await deps.store.latest_metric("surface", "bazaar_indexed_resources") == 1.0
+
+
+async def test_run_surface_failure_is_recorded(deps, monkeypatch) -> None:
+    async def boom(client, **kwargs):
+        raise RuntimeError("sweep exploded")
+
+    monkeypatch.setattr(pipeline, "fetch_surface", boom)
+    outcome = await pipeline.run_surface(deps)
+    assert not outcome.ok
+    assert "sweep exploded" in outcome.summary
+
+
+async def test_run_draft_ignores_api_origin_findings(deps) -> None:
+    # Cloud-origin surface findings are report-only: the drafter can only
+    # edit hyrule-web, so they must never reach it.
+    await deps.store.upsert_findings(
+        [
+            Finding(
+                check="well_known_x402", severity="error", message="m",
+                url="https://cloud.hyrule.host/.well-known/x402.json", source="surface",
+            )
+        ]
+    )
+    outcome = await pipeline.run_draft(deps)
+    assert outcome.stats["decision"] == "stay_silent"
+    assert outcome.summary == "no actionable findings"

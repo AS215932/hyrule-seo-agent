@@ -261,3 +261,22 @@ def test_non_html_resources_skip_meta_checks() -> None:
     from app.audit.checks import audit_crawl
 
     assert audit_crawl(crawl, site_base_url="https://hyrule.host") == []
+
+
+def test_twitter_card_requires_image() -> None:
+    # summary_large_image with no image at all → twitter:image joins the
+    # missing-social list; og:image alone satisfies the card's fallback.
+    no_image = snap(
+        "/",
+        og={"og:title": "t", "og:description": "d"},
+        twitter={"twitter:title": "t", "twitter:description": "d", "twitter:card": "summary_large_image"},
+    )
+    findings = audit_crawl(crawl([no_image]), site_base_url=BASE)
+    assert checks_of(findings) == {("social_meta", "warning")}
+    assert "twitter:image" in findings[0].message and "og:image" in findings[0].message
+
+    fallback = snap(
+        "/",
+        twitter={"twitter:title": "t", "twitter:description": "d", "twitter:card": "summary_large_image"},
+    )
+    assert audit_crawl(crawl([fallback]), site_base_url=BASE) == []
