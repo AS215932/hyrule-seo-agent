@@ -64,10 +64,14 @@ class Settings(BaseSettings):
     # published key file at /indexnow.txt validates our pings. Empty → off.
     indexnow_key: str = ""
 
-    # x402 Bazaar discovery endpoint used to verify our resources are indexed
-    # (e.g. https://api.cdp.coinbase.com/platform/v2/x402/discovery/resources).
+    # x402 Bazaar discovery query used to verify our resources are indexed.
+    # The search form filters server-side (the flat /resources listing is
+    # thousands of entries deep — one unpaginated page would miss us).
+    # Verified live 2026-08-08: returns the indexed cloud.hyrule.host set.
     # Empty → the listing check and metric are off.
-    bazaar_discovery_url: str = ""
+    bazaar_discovery_url: str = (
+        "https://api.cdp.coinbase.com/platform/v2/x402/discovery/search?query=hyrule"
+    )
 
     # AI crawlers that must stay allowed in robots.txt; blocking one of these
     # silently removes the site from that assistant's grounding.
