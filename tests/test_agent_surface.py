@@ -154,9 +154,9 @@ def test_x402_manifest_error_variants() -> None:
         assert ("well_known_x402", "error") in checks_of(findings)
 
 
-def test_web_x402_missing_is_warning_until_workstream_ships() -> None:
+def test_web_x402_missing_is_error() -> None:
     findings = run(surface(web_x402=doc(f"{WEB}/.well-known/x402.json", 404)))
-    assert checks_of(findings) == {("well_known_x402", "warning")}
+    assert checks_of(findings) == {("well_known_x402", "error")}
 
 
 def test_x402_price_sanity() -> None:
@@ -201,9 +201,9 @@ def test_x402_brand_and_api_manifests_disagree() -> None:
 # -- agent card -------------------------------------------------------------
 
 
-def test_agent_card_missing_is_warning() -> None:
+def test_agent_card_missing_is_error() -> None:
     findings = run(surface(api_agent_card=doc(f"{API}/.well-known/agent-card.json", 404)))
-    assert checks_of(findings) == {("agent_card", "warning")}
+    assert checks_of(findings) == {("agent_card", "error")}
 
 
 def test_agent_card_invalid_json_is_error() -> None:
@@ -278,13 +278,13 @@ def test_robots_fetch_failure_is_not_our_finding() -> None:
     assert run(surface(web_robots_txt=doc(f"{WEB}/robots.txt", 0))) == []
 
 
-def test_api_origin_missing_robots_and_llms_warn() -> None:
+def test_api_origin_missing_robots_and_llms_error() -> None:
     snapshot = surface(
         api_robots_txt=doc(f"{API}/robots.txt", 404),
         api_llms_txt=doc(f"{API}/llms.txt", 404),
     )
     findings = run(snapshot)
-    assert checks_of(findings) == {("ai_robots", "warning")}
+    assert checks_of(findings) == {("ai_robots", "error")}
     assert len(findings) == 2
 
 
@@ -296,9 +296,9 @@ def test_indexnow_unset_key_skips() -> None:
     assert run(snapshot, indexnow_key="") == []
 
 
-def test_indexnow_unpublished_warns_and_mismatch_errors() -> None:
+def test_indexnow_unpublished_and_mismatch_both_error() -> None:
     unpublished = run(surface(web_indexnow=doc(f"{WEB}/indexnow.txt", 404)))
-    assert checks_of(unpublished) == {("indexnow_key", "warning")}
+    assert checks_of(unpublished) == {("indexnow_key", "error")}
     mismatch = run(surface(web_indexnow=doc(f"{WEB}/indexnow.txt", text="different")))
     assert checks_of(mismatch) == {("indexnow_key", "error")}
 

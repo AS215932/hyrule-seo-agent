@@ -10,9 +10,10 @@ Cloud-origin findings (``url`` on the API host) are report-only: the drafter's
 ``allowed_edit_paths`` covers hyrule-web only, so ``run_draft`` never proposes
 edits for them.
 
-Severity policy: surfaces that are live today regress as errors; surfaces the
-parallel discovery workstream is still shipping start as warnings — bump each
-``_PENDING`` entry to "error" once the corresponding asset is deployed.
+Severity policy: every audited surface is live in production (the discovery
+workstream deployed 2026-08-08), so absence regresses as an error. New
+surfaces that are planned but not yet shipped should enter ``_PENDING`` as
+"warning" and be bumped once deployed.
 """
 
 from __future__ import annotations
@@ -24,13 +25,15 @@ from typing import Any, TypeGuard
 
 from app.models import FetchedDoc, Finding, Severity, SurfaceSnapshot, severity_rank
 
-# Warnings that become errors once the discovery workstream ships the asset.
+# Severity per surface while it rolls out: "warning" until the asset first
+# ships, "error" once live (regressions must page). All current surfaces
+# deployed 2026-08-08.
 _PENDING: dict[str, Severity] = {
-    "web_x402": "warning",
-    "agent_card": "warning",
-    "api_robots": "warning",
-    "api_llms": "warning",
-    "indexnow_unpublished": "warning",
+    "web_x402": "error",
+    "agent_card": "error",
+    "api_robots": "error",
+    "api_llms": "error",
+    "indexnow_unpublished": "error",
 }
 
 # Required top-level A2A agent-card fields (spec minimum we rely on).
