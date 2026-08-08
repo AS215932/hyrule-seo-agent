@@ -83,6 +83,14 @@ def _meta_findings(page: PageSnapshot, base: str) -> list[Finding]:
 
     social = {**page.og, **page.twitter}
     missing_social = [key for key in _SOCIAL_KEYS if key not in social]
+    # summary_large_image promises a wide image; without twitter:image (or
+    # og:image, which Twitter falls back to) every share card renders blank.
+    if (
+        page.twitter.get("twitter:card") == "summary_large_image"
+        and "twitter:image" not in social
+        and "og:image" not in social
+    ):
+        missing_social.append("twitter:image")
     if missing_social:
         out.append(
             _finding("social_meta", "warning", "missing social metadata: " + ", ".join(missing_social), url=page.url)

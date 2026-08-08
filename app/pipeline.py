@@ -19,9 +19,11 @@ from app import agent_core_trace
 from app.actions import github, indexnow, workspace
 from app.metrics_registry import LAST_RUN_TS, RUNS_TOTAL
 from app.actions.drafter import draft_proposal, gather_context_files
+from app.audit.agent_surface import audit_surface, bazaar_indexed_count
 from app.audit.checks import audit_crawl
 from app.audit.scoring import findings_from_metrics, rank_findings, top_findings
 from app.collectors.crawler import crawl_site
+from app.collectors.surface import fetch_surface
 from app.collectors.gsc import GSCCollector
 from app.collectors.psi import collect_psi
 from app.collectors.umami import UmamiCollector
@@ -95,6 +97,51 @@ async def run_audit(deps: Deps) -> PhaseOutcome:
         log.exception("audit_failed")
         return await _finish(
             deps, "audit", started=started, ok=False, summary=str(exc)[:200], stats={}
+        )
+
+
+async def run_surface(deps: Deps) -> PhaseOutcome:
+    """Sweep the agent-discovery surface (llms.txt, x402, agent card, Bazaar)."""
+    started = _now()
+    s = deps.settings
+    try:
+        snapshot = await fetch_surface(
+            deps.client,
+            site_base_url=s.site_base_url,
+            api_base_url=s.api_base_url,
+            user_agent=s.user_agent,
+            bazaar_url=s.bazaar_discovery_url,
+        )
+        findings = audit_surface(
+            snapshot,
+            site_base_url=s.site_base_url,
+            api_base_url=s.api_base_url,
+            indexnow_key=s.indexnow_key,
+            agent_bots=s.agent_bot_list,
+        )
+        new, seen = await deps.store.upsert_findings(findings)
+        resolved = await deps.store.resolve_stale("surface", {f.fingerprint for f in findings})
+        indexed = bazaar_indexed_count(snapshot, s.api_base_url)
+        if indexed is not None:
+            await deps.store.add_metrics(
+                [MetricSample(source="surface", metric="bazaar_indexed_resources", value=float(indexed))]
+            )
+        stats = {
+            "docs": len(snapshot.docs()),
+            "findings": len(findings),
+            "new": new,
+            "seen": seen,
+            "resolved": resolved,
+            "bazaar_indexed": indexed,
+        }
+        return await _finish(
+            deps, "surface", started=started, ok=True,
+            summary=f"{len(snapshot.docs())} docs, {len(findings)} findings ({new} new)", stats=stats,
+        )
+    except Exception as exc:  # defense in depth; the collector already degrades
+        log.exception("surface_failed")
+        return await _finish(
+            deps, "surface", started=started, ok=False, summary=str(exc)[:200], stats={}
         )
 
 
@@ -183,6 +230,9 @@ async def run_draft(deps: Deps) -> PhaseOutcome:
             rank_findings(await deps.store.active_findings()), limit=8
         )
         actionable = [f for f in candidates if f.severity in ("error", "warning")]
+        # Surface findings on the API origin are report-only: the drafter can
+        # only edit hyrule-web, so never feed it URLs it cannot fix.
+        actionable = [f for f in actionable if not f.url or f.url.startswith(s.site_base_url)]
         if not actionable:
             agent_core_trace.emit_pr_decision(
                 run_id=run_id, decision="stay_silent", title="", rationale="no actionable findings",

@@ -9,7 +9,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field
 
 Severity = Literal["info", "warning", "error"]
-Source = Literal["crawl", "audit", "gsc", "psi", "umami", "agent"]
+Source = Literal["crawl", "audit", "gsc", "psi", "umami", "agent", "surface"]
 
 _SEVERITY_ORDER: dict[str, int] = {"error": 0, "warning": 1, "info": 2}
 
@@ -74,6 +74,42 @@ class CrawlResult(BaseModel):
     sitemap_ok: bool = False
     sitemap_paths: list[str] = Field(default_factory=list)
     sitemap_hash: str = ""
+
+
+class FetchedDoc(BaseModel):
+    """One fetch-only artifact from the agent-surface sweep.
+
+    ``status_code`` 0 means transport failure (crawler convention);
+    ``json_body`` is the parsed document when the response parsed as JSON.
+    """
+
+    url: str
+    status_code: int = 0
+    content_type: str = ""
+    text: str = ""
+    json_body: Any = None
+
+
+class SurfaceSnapshot(BaseModel):
+    """Everything one agent-surface sweep fetched. ``None`` means the fetch
+    was not attempted (origin or integration unconfigured), never that it
+    failed — failures are ``status_code=0`` docs."""
+
+    web_llms_txt: FetchedDoc | None = None
+    web_robots_txt: FetchedDoc | None = None
+    web_x402: FetchedDoc | None = None
+    web_agent_card: FetchedDoc | None = None
+    web_indexnow: FetchedDoc | None = None
+    api_x402: FetchedDoc | None = None
+    api_agent_card: FetchedDoc | None = None
+    api_openapi: FetchedDoc | None = None
+    api_robots_txt: FetchedDoc | None = None
+    api_llms_txt: FetchedDoc | None = None
+    bazaar: FetchedDoc | None = None
+
+    def docs(self) -> list[FetchedDoc]:
+        """Every doc a sweep actually attempted, in field order."""
+        return [doc for doc in self.__dict__.values() if isinstance(doc, FetchedDoc)]
 
 
 class MetricSample(BaseModel):
